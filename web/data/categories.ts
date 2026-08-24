@@ -1,0 +1,68 @@
+import type { Category } from "@/lib/types";
+
+export const categories: Category[] = [
+  {
+    id: "cat-1",
+    slug: "fruits-vegetables",
+    name: "Fruits & Vegetables",
+    description: "Fresh picks, straight from the farm",
+    icon: "Carrot",
+    image: "https://picsum.photos/seed/fruits-vegetables/600/400",
+  },
+  {
+    id: "cat-2",
+    slug: "dairy-eggs",
+    name: "Dairy & Eggs",
+    description: "Milk, cheese, curd, butter & more",
+    icon: "Milk",
+    image: "https://picsum.photos/seed/dairy-eggs/600/400",
+  },
+  {
+    id: "cat-3",
+    slug: "bakery",
+    name: "Bakery",
+    description: "Breads, buns, cakes & pastries",
+    icon: "Croissant",
+    image: "https://picsum.photos/seed/bakery/600/400",
+  },
+  {
+    id: "cat-4",
+    slug: "beverages",
+    name: "Beverages",
+    description: "Juices, soft drinks, tea & coffee",
+    icon: "CupSoda",
+    image: "https://picsum.photos/seed/beverages/600/400",
+  },
+  {
+    id: "cat-5",
+    slug: "snacks-munchies",
+    name: "Snacks & Munchies",
+    description: "Chips, namkeen, biscuits & more",
+    icon: "Cookie",
+    image: "https://picsum.photos/seed/snacks-munchies/600/400",
+  },
+  {
+    id: "cat-6",
+    slug: "staples-grains",
+    name: "Staples & Grains",
+    description: "Atta, rice, dal, oil & spices",
+    icon: "Wheat",
+    image: "https://picsum.photos/seed/staples-grains/600/400",
+  },
+  {
+    id: "cat-7",
+    slug: "personal-care",
+    name: "Personal Care",
+    description: "Skincare, haircare & hygiene",
+    icon: "Sparkles",
+    image: "https://picsum.photos/seed/personal-care/600/400",
+  },
+  {
+    id: "cat-8",
+    slug: "household-essentials",
+    name: "Household Essentials",
+    description: "Cleaning supplies & daily needs",
+    icon: "SprayCan",
+    image: "https://picsum.photos/seed/household-essentials/600/400",
+  },
+];
