@@ -11,9 +11,14 @@ import { cartRoutes } from "./routes/cart";
 import { orderRoutes } from "./routes/orders";
 import { razorpayWebhook } from "./webhooks/razorpay";
 import type { AppEnv } from "./types";
+import { logger } from "hono/logger";
 
 const app = new Hono<AppEnv>();
 
+// Logging — log all requests to the console.
+app.use(logger())
+
+// CORS — allow all origins, and allow all headers.
 app.use(
   "*",
   cors({
@@ -23,8 +28,10 @@ app.use(
   })
 );
 
+// Root — just a simple health check.
 app.get("/", (c) => c.json({ status: "ok" }));
 
+// API routes.
 app.route("/api/auth", authRoutes);
 app.route("/api/categories", categoryRoutes);
 app.route("/api/products", productRoutes);
