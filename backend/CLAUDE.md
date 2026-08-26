@@ -5,6 +5,11 @@ This file scopes to work happening inside `/backend`. It loads alongside the roo
 only adds backend-specific detail. If something here seems to conflict with the root file, the
 root file's Hard Rules win; ask before proceeding.
 
+**If you're building the frontend (or anything else) that calls this API, read `backend/API.md`
+instead of this file** — it's the full request/response contract (every route, entity shape,
+error format, and the Razorpay checkout sequence) written so you don't need to read backend source
+to integrate against it. This file (`CLAUDE.md`) is for people/agents changing backend code.
+
 ---
 
 ## Layout

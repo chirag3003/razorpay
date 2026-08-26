@@ -14,4 +14,8 @@ bun run dev
 
 See `CLAUDE.md` for the full script list (migrations, seeding, build/start) and first-time setup.
 
+See `API.md` for the full REST API reference (every route, request/response shapes, error
+format, and the Razorpay checkout integration sequence) — written for integrating a frontend
+against this backend without reading its source.
+
 This project was created using `bun init` in bun v1.3.14. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
