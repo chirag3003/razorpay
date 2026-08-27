@@ -4,9 +4,7 @@ import type { OrderStatus } from "@/lib/types";
 
 const FLOW: { status: OrderStatus; label: string }[] = [
   { status: "placed", label: "Order Placed" },
-  { status: "confirmed", label: "Confirmed" },
-  { status: "packed", label: "Packed" },
-  { status: "out_for_delivery", label: "Out for Delivery" },
+  { status: "shipped", label: "Shipped" },
   { status: "delivered", label: "Delivered" },
 ];
 

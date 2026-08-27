@@ -5,8 +5,6 @@ import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
-import { Header } from "@/components/layout/header";
-import { Footer } from "@/components/layout/footer";
 import { AuthHydrator } from "@/components/auth/auth-hydrator";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
@@ -41,11 +39,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           enableSystem
           disableTransitionOnChange
         >
-          <TooltipProvider delay={200}>
-            <Header />
-            <main className="flex-1">{children}</main>
-            <Footer />
-          </TooltipProvider>
+          {/* Site chrome lives in app/(shop)/layout.tsx so /admin can opt out of it. */}
+          <TooltipProvider delay={200}>{children}</TooltipProvider>
           <Toaster position="top-center" richColors />
           <AuthHydrator />
         </ThemeProvider>

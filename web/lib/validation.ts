@@ -54,3 +54,51 @@ export const profileSchema = z.object({
 });
 
 export type ProfileFormValues = z.infer<typeof profileSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* admin                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export const adminLoginSchema = z.object({
+  password: z.string().min(1, "Enter the admin password"),
+});
+
+export type AdminLoginFormValues = z.infer<typeof adminLoginSchema>;
+
+export const adminProductSchema = z
+  .object({
+    name: z.string().min(2, "Enter a product name"),
+    categorySlug: z.string().min(1, "Pick a category"),
+    // Inputs of type="number" hand back strings, and there's no
+    // valueAsNumber escape hatch when the field goes through Controller.
+    price: z.coerce
+      .number<number>()
+      .int("Price must be a whole rupee amount")
+      .positive("Enter a price"),
+    mrp: z.coerce
+      .number<number>()
+      .int("MRP must be a whole rupee amount")
+      .positive("Enter an MRP"),
+    unit: z.string().min(1, "Enter a unit, e.g. 500 g"),
+    image: z.url("Enter a valid image URL"),
+    description: z.string().min(10, "Enter a description"),
+    images: z.string().optional(),
+    tags: z.string().optional(),
+    inStock: z.boolean(),
+  })
+  .refine((data) => data.mrp >= data.price, {
+    message: "MRP must be at least the selling price",
+    path: ["mrp"],
+  });
+
+export type AdminProductFormValues = z.infer<typeof adminProductSchema>;
+
+export const adminCategorySchema = z.object({
+  name: z.string().min(2, "Enter a category name"),
+  slug: z.string().optional(),
+  description: z.string().min(5, "Enter a description"),
+  icon: z.string().min(1, "Pick an icon"),
+  image: z.url("Enter a valid image URL"),
+});
+
+export type AdminCategoryFormValues = z.infer<typeof adminCategorySchema>;

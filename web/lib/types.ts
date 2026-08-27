@@ -75,13 +75,7 @@ export type OrderAddress = {
   pincode: string;
 };
 
-export type OrderStatus =
-  | "placed"
-  | "confirmed"
-  | "packed"
-  | "out_for_delivery"
-  | "delivered"
-  | "cancelled";
+export type OrderStatus = "placed" | "shipped" | "delivered" | "cancelled";
 
 export type OrderItem = {
   productId: string;
