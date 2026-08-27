@@ -19,6 +19,7 @@ import { OrderStatusBadge } from "@/components/order/order-status-badge";
 import { OrderTimeline } from "@/components/order/order-timeline";
 import { ReorderButton } from "@/components/order/reorder-button";
 import { EmptyState } from "@/components/common/empty-state";
+import { ErrorState } from "@/components/common/error-state";
 import { getOrderById } from "@/lib/api/orders";
 import { useAuthStore } from "@/store/auth-store";
 import { formatPrice } from "@/lib/utils";
@@ -31,23 +32,51 @@ export default function OrderDetailPage() {
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  function retry() {
+    setLoading(true);
+    setNotFound(false);
+    setLoadError(false);
+    setReloadKey((k) => k + 1);
+  }
 
   useEffect(() => {
     if (!token) return;
+    let ignore = false;
     getOrderById(token, id)
-      .then(setOrder)
+      .then((data) => {
+        if (!ignore) setOrder(data);
+      })
       .catch((err) => {
+        if (ignore) return;
         if (err instanceof ApiError && err.code === "NOT_FOUND") {
           setNotFound(true);
+        } else {
+          setLoadError(true);
         }
       })
-      .finally(() => setLoading(false));
-  }, [token, id]);
+      .finally(() => {
+        if (!ignore) setLoading(false);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [token, id, reloadKey]);
 
   if (loading) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
         <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-6">
+        <ErrorState onRetry={retry} action={{ label: "Back to orders", href: "/orders" }} />
       </div>
     );
   }
@@ -155,7 +184,7 @@ export default function OrderDetailPage() {
             </div>
             <div className="text-sm">
               <p className="text-muted-foreground">Payment method</p>
-              <p className="font-medium">{order.paymentMethod}</p>
+              <p className="font-medium capitalize">{order.paymentMethod}</p>
             </div>
           </Card>
 

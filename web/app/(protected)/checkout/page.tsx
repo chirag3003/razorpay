@@ -18,7 +18,6 @@ import { CheckoutStepper } from "@/components/checkout/checkout-stepper";
 import { AddressCard } from "@/components/checkout/address-card";
 import { AddressForm } from "@/components/checkout/address-form";
 import { DeliverySlotPicker, DELIVERY_SLOTS } from "@/components/checkout/delivery-slot-picker";
-import { PaymentMethodSelect, PAYMENT_METHODS } from "@/components/checkout/payment-method-select";
 import { CartSummary } from "@/components/cart/cart-summary";
 import { CartLineItem } from "@/components/cart/cart-line-item";
 import { EmptyState } from "@/components/common/empty-state";
@@ -30,8 +29,6 @@ import { loadRazorpayCheckout } from "@/lib/razorpay";
 import { ApiError } from "@/lib/api/client";
 import type { Address } from "@/lib/types";
 import type { AddressFormValues } from "@/lib/validation";
-
-type PaymentMethodId = (typeof PAYMENT_METHODS)[number]["id"];
 
 export default function CheckoutPage() {
   const router = useRouter();
@@ -46,7 +43,6 @@ export default function CheckoutPage() {
   const [selectedAddressId, setSelectedAddressId] = useState("");
   const [addressDialogOpen, setAddressDialogOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState("");
-  const [selectedPayment, setSelectedPayment] = useState<PaymentMethodId | "">("");
   const [placingOrder, setPlacingOrder] = useState(false);
 
   useEffect(() => {
@@ -83,9 +79,6 @@ export default function CheckoutPage() {
 
   const selectedAddress = addresses.find((a) => a.id === selectedAddressId);
   const selectedSlotLabel = DELIVERY_SLOTS.find((s) => s.id === selectedSlot);
-  const selectedPaymentLabel = PAYMENT_METHODS.find(
-    (p) => p.id === selectedPayment
-  );
 
   async function handleAddAddress(values: AddressFormValues) {
     if (!token) return;
@@ -101,7 +94,7 @@ export default function CheckoutPage() {
   }
 
   async function placeOrder() {
-    if (!token || !user || !selectedAddress || !selectedSlotLabel || !selectedPayment) {
+    if (!token || !user || !selectedAddress || !selectedSlotLabel) {
       return;
     }
     setPlacingOrder(true);
@@ -110,7 +103,6 @@ export default function CheckoutPage() {
       const init = await initiateCheckout(token, {
         addressId: selectedAddress.id,
         deliverySlot: `${selectedSlotLabel.day}, ${selectedSlotLabel.time}`,
-        paymentMethod: selectedPayment,
       });
 
       await loadRazorpayCheckout();
@@ -225,36 +217,13 @@ export default function CheckoutPage() {
                   disabled={!selectedSlot}
                   onClick={() => setStep(3)}
                 >
-                  Continue to payment
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {step === 3 && (
-            <div className="space-y-4">
-              <h2 className="font-heading font-medium">Payment method</h2>
-              <PaymentMethodSelect
-                value={selectedPayment}
-                onChange={(value) => setSelectedPayment(value as PaymentMethodId)}
-              />
-              <Separator />
-              <div className="flex gap-3">
-                <Button variant="outline" onClick={() => setStep(2)}>
-                  Back
-                </Button>
-                <Button
-                  className="flex-1"
-                  disabled={!selectedPayment}
-                  onClick={() => setStep(4)}
-                >
                   Review order
                 </Button>
               </div>
             </div>
           )}
 
-          {step === 4 && selectedAddress && (
+          {step === 3 && selectedAddress && (
             <div className="space-y-5">
               <h2 className="font-heading font-medium">Review your order</h2>
 
@@ -272,7 +241,7 @@ export default function CheckoutPage() {
 
               <Separator />
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <ReviewBlock title="Deliver to">
                   <p className="font-medium">{selectedAddress.name}</p>
                   <p>
@@ -285,15 +254,17 @@ export default function CheckoutPage() {
                     {selectedSlotLabel?.day} · {selectedSlotLabel?.time}
                   </p>
                 </ReviewBlock>
-                <ReviewBlock title="Payment method">
-                  <p>{selectedPaymentLabel?.label}</p>
-                </ReviewBlock>
               </div>
 
               <Separator />
 
+              <p className="text-sm text-muted-foreground">
+                You&apos;ll choose how to pay (UPI, card, net banking, and more) on
+                the secure Razorpay screen.
+              </p>
+
               <div className="flex gap-3">
-                <Button variant="outline" onClick={() => setStep(3)} disabled={placingOrder}>
+                <Button variant="outline" onClick={() => setStep(2)} disabled={placingOrder}>
                   Back
                 </Button>
                 <Button className="flex-1" onClick={placeOrder} disabled={placingOrder}>

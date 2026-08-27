@@ -43,11 +43,17 @@ function buildQueryString(
 }
 
 async function parseErrorResponse(res: Response): Promise<never> {
+  const genericMessage =
+    res.status >= 500
+      ? "The server ran into a problem. Please try again in a moment."
+      : "Something went wrong";
+  const genericCode = res.status >= 500 ? "SERVER_ERROR" : "UNKNOWN";
+
   let body: unknown;
   try {
     body = await res.json();
   } catch {
-    throw new ApiError("Something went wrong", "UNKNOWN", res.status);
+    throw new ApiError(genericMessage, genericCode, res.status);
   }
 
   if (
@@ -92,11 +98,11 @@ async function parseErrorResponse(res: Response): Promise<never> {
     const code =
       "code" in body && typeof (body as { code: unknown }).code === "string"
         ? (body as { code: string }).code
-        : "UNKNOWN";
+        : genericCode;
     throw new ApiError((body as { error: string }).error, code, res.status);
   }
 
-  throw new ApiError("Something went wrong", "UNKNOWN", res.status);
+  throw new ApiError(genericMessage, genericCode, res.status);
 }
 
 export async function apiFetch<T>(
@@ -104,8 +110,10 @@ export async function apiFetch<T>(
   opts: ApiFetchOptions = {}
 ): Promise<T> {
   if (!BASE_URL) {
-    throw new Error(
-      "NEXT_PUBLIC_API_BASE_URL is not set — add it to web/.env.local"
+    throw new ApiError(
+      "NEXT_PUBLIC_API_BASE_URL is not set — add it to web/.env.local",
+      "CONFIG_ERROR",
+      0
     );
   }
 
@@ -113,14 +121,24 @@ export async function apiFetch<T>(
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
   if (opts.token) headers["Authorization"] = `Bearer ${opts.token}`;
 
-  const res = await fetch(
-    `${BASE_URL}${path}${buildQueryString(opts.searchParams)}`,
-    {
-      method: opts.method ?? "GET",
-      headers,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-    }
-  );
+  let res: Response;
+  try {
+    res = await fetch(
+      `${BASE_URL}${path}${buildQueryString(opts.searchParams)}`,
+      {
+        method: opts.method ?? "GET",
+        headers,
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      }
+    );
+  } catch {
+    // Transport failure: server down, DNS, connection refused, offline.
+    throw new ApiError(
+      "Can't reach the server. Check your connection and try again.",
+      "NETWORK_ERROR",
+      0
+    );
+  }
 
   if (!res.ok) {
     await parseErrorResponse(res);
@@ -131,4 +149,15 @@ export async function apiFetch<T>(
   }
 
   return (await res.json()) as T;
+}
+
+export function isNetworkError(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "NETWORK_ERROR";
+}
+
+export function isServerError(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    (err.status >= 500 || err.code === "NETWORK_ERROR")
+  );
 }

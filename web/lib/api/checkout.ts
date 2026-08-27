@@ -13,7 +13,6 @@ export function initiateCheckout(
   data: {
     addressId: string;
     deliverySlot: string;
-    paymentMethod: "upi" | "card" | "netbanking";
   }
 ): Promise<InitiateCheckoutResponse> {
   return apiFetch<InitiateCheckoutResponse>("/api/cart/checkout/initiate", {

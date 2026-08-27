@@ -4,7 +4,12 @@ import * as authApi from "@/lib/api/auth";
 import { useCartStore } from "@/store/cart-store";
 import type { User } from "@/lib/types";
 
-type AuthStatus = "idle" | "loading" | "authenticated" | "unauthenticated";
+type AuthStatus =
+  | "idle"
+  | "loading"
+  | "authenticated"
+  | "unauthenticated"
+  | "error";
 
 type AuthState = {
   user: User | null;
@@ -56,8 +61,15 @@ export const useAuthStore = create<AuthState>()(
           const { user } = await authApi.getMe(token);
           set({ user, status: "authenticated" });
           useCartStore.getState().fetchCart();
-        } catch {
-          set({ user: null, token: null, status: "unauthenticated" });
+        } catch (err) {
+          if (isUnauthorizedError(err)) {
+            // Token is genuinely invalid — clear the session.
+            set({ user: null, token: null, status: "unauthenticated" });
+          } else {
+            // Network / server error — keep the session so the user isn't
+            // logged out by a transient backend outage; let the UI offer a retry.
+            set({ status: "error" });
+          }
         }
       },
     }),

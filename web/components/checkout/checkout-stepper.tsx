@@ -1,7 +1,7 @@
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const STEPS = ["Address", "Delivery Slot", "Payment", "Review"];
+const STEPS = ["Address", "Delivery Slot", "Review"];
 
 export function CheckoutStepper({ current }: { current: number }) {
   return (

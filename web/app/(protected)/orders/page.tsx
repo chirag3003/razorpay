@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { EmptyState } from "@/components/common/empty-state";
+import { ErrorState } from "@/components/common/error-state";
 import { OrderStatusBadge } from "@/components/order/order-status-badge";
 import { ReorderButton } from "@/components/order/reorder-button";
 import { getOrders } from "@/lib/api/orders";
@@ -18,18 +19,46 @@ export default function OrdersPage() {
   const token = useAuthStore((state) => state.token);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  function retry() {
+    setLoading(true);
+    setFailed(false);
+    setReloadKey((k) => k + 1);
+  }
 
   useEffect(() => {
     if (!token) return;
+    let ignore = false;
     getOrders(token)
-      .then(setOrders)
-      .finally(() => setLoading(false));
-  }, [token]);
+      .then((data) => {
+        if (!ignore) setOrders(data);
+      })
+      .catch(() => {
+        if (!ignore) setFailed(true);
+      })
+      .finally(() => {
+        if (!ignore) setLoading(false);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [token, reloadKey]);
 
   if (loading) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
         <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (failed) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-6">
+        <h1 className="mb-6 font-heading text-2xl font-semibold">Your Orders</h1>
+        <ErrorState onRetry={retry} />
       </div>
     );
   }

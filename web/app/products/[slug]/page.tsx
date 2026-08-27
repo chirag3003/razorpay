@@ -34,9 +34,10 @@ export default async function ProductDetailPage({
     notFound();
   }
 
+  // Secondary data — never let a failure here blank an otherwise-loadable product page.
   const [category, related] = await Promise.all([
-    getCategoryBySlug(product.categorySlug),
-    getRelatedProducts(slug, 5),
+    getCategoryBySlug(product.categorySlug).catch(() => null),
+    getRelatedProducts(slug, 5).catch(() => []),
   ]);
 
   return (

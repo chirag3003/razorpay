@@ -9,17 +9,31 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "
 import { CartLineItem } from "@/components/cart/cart-line-item";
 import { CartSummary } from "@/components/cart/cart-summary";
 import { EmptyState } from "@/components/common/empty-state";
+import { ErrorState } from "@/components/common/error-state";
 import { useCartSummary, useCartStore } from "@/store/cart-store";
 
 export default function CartPage() {
   const { lines, subtotal, deliveryFee, total, itemCount } = useCartSummary();
   const status = useCartStore((state) => state.status);
   const clear = useCartStore((state) => state.clear);
+  const fetchCart = useCartStore((state) => state.fetchCart);
 
   if (status === "idle" || status === "loading") {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
         <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6">
+        <ErrorState
+          title="Couldn't load your cart"
+          description="We couldn't reach the server. Please try again in a moment."
+          onRetry={() => fetchCart()}
+        />
       </div>
     );
   }

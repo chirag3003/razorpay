@@ -99,7 +99,7 @@ export type Order = {
   items: OrderItem[];
   address: OrderAddress;
   deliverySlot: string;
-  paymentMethod: "upi" | "card" | "netbanking";
+  paymentMethod: string;
   razorpayOrderId: string;
   razorpayPaymentId: string;
   subtotal: number;

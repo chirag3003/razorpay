@@ -20,6 +20,7 @@ export function SearchCommand() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Product[]>([]);
+  const [searchError, setSearchError] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -36,13 +37,22 @@ export function SearchCommand() {
   useEffect(() => {
     if (!query.trim()) {
       setResults([]);
+      setSearchError(false);
       return;
     }
     let cancelled = false;
     const timeout = setTimeout(() => {
-      searchProducts(query, 8).then((products) => {
-        if (!cancelled) setResults(products);
-      });
+      searchProducts(query, 8)
+        .then((products) => {
+          if (cancelled) return;
+          setResults(products);
+          setSearchError(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setResults([]);
+          setSearchError(true);
+        });
     }, 200);
     return () => {
       cancelled = true;
@@ -97,7 +107,10 @@ export function SearchCommand() {
           }}
         />
         <CommandList>
-          {query.trim() && results.length === 0 && (
+          {query.trim() && searchError && (
+            <CommandEmpty>Couldn&apos;t search right now. Please try again.</CommandEmpty>
+          )}
+          {query.trim() && !searchError && results.length === 0 && (
             <CommandEmpty>No products found for &quot;{query}&quot;.</CommandEmpty>
           )}
           {results.length > 0 && (

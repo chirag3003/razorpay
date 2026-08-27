@@ -60,6 +60,14 @@ function Carousel({
   )
   const [canScrollPrev, setCanScrollPrev] = React.useState(false)
   const [canScrollNext, setCanScrollNext] = React.useState(false)
+  // `false` on the server and during hydration, `true` once mounted on the client — keeps the
+  // buttons' `disabled` attribute identical between SSR and the first client render so Embla
+  // flipping these flags in an effect can't produce a hydration mismatch.
+  const mounted = React.useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  )
 
   const onSelect = React.useCallback((api: CarouselApi) => {
     if (!api) return
@@ -114,8 +122,8 @@ function Carousel({
           orientation || (opts?.axis === "y" ? "vertical" : "horizontal"),
         scrollPrev,
         scrollNext,
-        canScrollPrev,
-        canScrollNext,
+        canScrollPrev: mounted && canScrollPrev,
+        canScrollNext: mounted && canScrollNext,
       }}
     >
       <div

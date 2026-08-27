@@ -36,7 +36,6 @@ export function DeliveryLocation() {
   return (
     <Popover>
       <PopoverTrigger
-        nativeButton={false}
         render={
           <Button
             variant="ghost"

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -27,7 +28,9 @@ export function AccountMenu() {
         <UserCircle className="size-5" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
-        <DropdownMenuLabel>{user ? user.name : "My account"}</DropdownMenuLabel>
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>{user ? user.name : "My account"}</DropdownMenuLabel>
+        </DropdownMenuGroup>
         <DropdownMenuItem render={<Link href="/account" />}>
           <UserCircle />
           Profile
