@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { ImageOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
@@ -213,14 +214,22 @@ export function ProductFormSheet({
                 )}
               />
 
+              {/* Not a registered field — a read-only view of the server-derived
+                  slug, so it uses plain primitives rather than the Form ones
+                  (those require an enclosing FormField for their context). */}
               {isEdit && (
-                <FormItem>
-                  <FormLabel>Slug</FormLabel>
-                  <Input value={product?.slug ?? ""} readOnly disabled />
-                  <FormDescription>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="product-slug">Slug</Label>
+                  <Input
+                    id="product-slug"
+                    value={product?.slug ?? ""}
+                    readOnly
+                    disabled
+                  />
+                  <p className="text-sm text-muted-foreground">
                     Generated from the original name and not editable.
-                  </FormDescription>
-                </FormItem>
+                  </p>
+                </div>
               )}
 
               <FormField
