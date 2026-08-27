@@ -24,8 +24,53 @@ export const ORDER_STATUSES = [
 
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
-// Reserve Pay (UPI SBMD) constants — not used yet, wired up once the agent token /
-// Reserve Pay flow is built (root claude.md, Days 6-7). Left here so callers of this
-// file don't need to change import paths when that lands.
-// export const RESERVE_PAY_MAX_AMOUNT = 10_000;
-// export const RESERVE_PAY_MAX_EXPIRY_DAYS = 90;
+// Reserve Pay (UPI SBMD). Both are hard regulatory ceilings, not preferences — Razorpay
+// rejects an authorisation order that exceeds either. Amount is in rupees to match the rest
+// of this file; the paise conversion happens at the paymentService boundary.
+export const RESERVE_PAY_MAX_AMOUNT = 10_000;
+export const RESERVE_PAY_MAX_EXPIRY_DAYS = 90;
+
+// Default block lifetime. Deliberately short of the 90-day ceiling: expire_at is sent as an
+// absolute timestamp, and asking for exactly the maximum leaves no headroom for clock skew
+// between us and Razorpay.
+export const RESERVE_PAY_DEFAULT_EXPIRY_DAYS = 30;
+
+// How long an unapproved mandate holds the one-live-mandate-per-user slot. A customer who
+// closes their UPI app mid-approval would otherwise be locked out of creating another one
+// forever; past this age createMandate expires the stale row and proceeds.
+export const RESERVE_PAY_PENDING_TTL_MINUTES = 15;
+
+// Mandate lifecycle. "pending" and "confirmed" are the two live states — a partial unique
+// index on reserve_pay_mandates allows only one row per user in either of them. The rest are
+// terminal. Same three-way enforcement as ORDER_STATUSES: TS type, Zod enum, Postgres CHECK.
+//   pending    authorisation payment created, customer hasn't approved in their UPI app yet
+//   confirmed  funds blocked, token issued, debitable
+//   paused     Razorpay/NPCI suspended the mandate; still live, but not debitable
+//   failed     the customer declined, or the bank/gateway rejected the authorisation
+//   revoked    we stopped honouring it locally (see reservePayService.revokeMandate)
+//   expired    past expire_at; the block is released by the bank
+//   exhausted  amount_debited caught up with amount_blocked, nothing left to draw on
+export const MANDATE_STATUSES = [
+  "pending",
+  "confirmed",
+  "paused",
+  "failed",
+  "revoked",
+  "expired",
+  "exhausted",
+] as const;
+
+export type MandateStatus = (typeof MANDATE_STATUSES)[number];
+
+// The two live states, shared by the uniqueness index and every "is this usable" check so the
+// definition of "live" can't drift between them.
+// "paused" counts as live: the block still holds the customer's funds, so it must keep holding
+// the per-user slot too. assertDebitable rejects it separately.
+export const LIVE_MANDATE_STATUSES = ["pending", "confirmed", "paused"] as const;
+
+// One row per debit attempt against a mandate, including the ones that failed — this table is
+// the reconciliation ledger and the Recovery Agent's future input, so failures are rows, not
+// dropped exceptions.
+export const RESERVE_PAY_DEBIT_STATUSES = ["created", "captured", "failed"] as const;
+
+export type ReservePayDebitStatus = (typeof RESERVE_PAY_DEBIT_STATUSES)[number];

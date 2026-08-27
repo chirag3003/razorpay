@@ -6,6 +6,7 @@ import * as addressService from "./addressService";
 import * as auditService from "./auditService";
 import * as cartService from "./cartService";
 import * as paymentService from "./paymentService";
+import * as reservePayService from "./reservePayService";
 import type { InitiateCheckoutInput } from "../schemas/checkout.schema";
 import { pgErrorCode, PG_UNIQUE_VIOLATION } from "../utils/db-error";
 
@@ -18,7 +19,14 @@ function generateOrderNumber() {
   return `FC-${timestamp}${random}`;
 }
 
-export async function initiateCheckout(userId: string, input: InitiateCheckoutInput) {
+// Validates the cart and address and freezes the totals. Shared by both checkout paths — the
+// browser one (initiateCheckout) and the headless Reserve Pay one — so they can't drift apart
+// on what gets charged or which errors a bad cart produces.
+async function buildCheckoutSnapshot(
+  userId: string,
+  input: InitiateCheckoutInput,
+  paymentMethod?: string
+) {
   const cartId = await cartService.getOrCreateActiveCartId(userId);
   const cart = await cartService.requireNonEmptyCart(cartId);
   const address = await addressService.getAddressForUser(userId, input.addressId);
@@ -36,27 +44,87 @@ export async function initiateCheckout(userId: string, input: InitiateCheckoutIn
       pincode: address.pincode,
     },
     deliverySlot: input.deliverySlot,
-    paymentMethod: input.paymentMethod ?? "razorpay",
+    paymentMethod: paymentMethod ?? input.paymentMethod ?? "razorpay",
     subtotal: cart.subtotal,
     deliveryFee: cart.deliveryFee,
     discount,
     total: cart.total - discount,
   };
 
+  return { cartId, snapshot };
+}
+
+// Records the in-flight checkout attempt on the cart. confirmPayment finds the cart by this
+// razorpay order id, which is how both checkout paths converge on one order-creation routine.
+async function stashPendingCheckout(
+  cartId: string,
+  razorpayOrderId: string,
+  snapshot: CheckoutSnapshot
+) {
+  await db
+    .update(carts)
+    .set({ checkoutRazorpayOrderId: razorpayOrderId, checkoutSnapshot: snapshot })
+    .where(eq(carts.id, cartId));
+}
+
+export async function initiateCheckout(userId: string, input: InitiateCheckoutInput) {
+  const { cartId, snapshot } = await buildCheckoutSnapshot(userId, input);
+
   const razorpayOrder = await paymentService.createRazorpayOrder({
     amountInRupees: snapshot.total,
     receipt: `cart_${cartId}`,
   });
 
-  await db
-    .update(carts)
-    .set({
-      checkoutRazorpayOrderId: razorpayOrder.razorpayOrderId,
-      checkoutSnapshot: snapshot,
-    })
-    .where(eq(carts.id, cartId));
+  await stashPendingCheckout(cartId, razorpayOrder.razorpayOrderId, snapshot);
 
   return razorpayOrder;
+}
+
+/**
+ * Headless checkout against a UPI Reserve Pay mandate — no Checkout.js popup, no signature
+ * round-trip with the client, no customer interaction. This is the path AI-initiated orders take.
+ *
+ * The sequence is reserve -> stash -> charge -> confirm, and the ordering is the whole point.
+ * The cart snapshot must be on the cart *before* any money moves, because that snapshot is what
+ * the payment.captured webhook rebuilds the order from if this process dies mid-charge. Stashing
+ * after the charge (the obvious ordering) would leave exactly one unrecoverable window: money
+ * taken, no order, and a webhook with nothing to reconstruct from. prepareDebit reserves the
+ * funds and creates the Razorpay order without charging, which is what makes stashing early safe.
+ */
+export async function checkoutWithReservePay(userId: string, input: InitiateCheckoutInput) {
+  const { cartId, snapshot } = await buildCheckoutSnapshot(userId, input, "upi_reserve_pay");
+
+  const prepared = await reservePayService.prepareDebit({
+    userId,
+    amountInRupees: snapshot.total,
+    // Unique per attempt, not per cart — a retried checkout is a separate debit and needs its
+    // own receipt to stay traceable in reconciliation.
+    receipt: `cart_${cartId.slice(0, 8)}_${Date.now().toString(36)}`,
+  });
+
+  await stashPendingCheckout(cartId, prepared.razorpayOrderId, snapshot);
+
+  let debit;
+  try {
+    debit = await reservePayService.executeDebit(prepared.debitId, {
+      description: `Order from cart ${cartId.slice(0, 8)}`,
+    });
+  } catch (err) {
+    // Nothing was charged, so clear the pending checkout rather than leaving the cart pointing
+    // at a Razorpay order that will never be paid — a stale stash would make the next
+    // payment.failed webhook wipe a checkout the customer never started.
+    await db
+      .update(carts)
+      .set({ checkoutRazorpayOrderId: null, checkoutSnapshot: null })
+      .where(eq(carts.id, cartId));
+    throw err;
+  }
+
+  const order = await confirmPayment(debit.razorpayOrderId, debit.razorpayPaymentId);
+
+  await reservePayService.attachOrderToDebit(debit.debitId, order.id);
+
+  return order;
 }
 
 // Called by both the /checkout/verify route and the payment.captured webhook — signature

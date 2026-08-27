@@ -9,6 +9,7 @@ import { productRoutes } from "./routes/products";
 import { addressRoutes } from "./routes/addresses";
 import { cartRoutes } from "./routes/cart";
 import { orderRoutes } from "./routes/orders";
+import { reservePayRoutes } from "./routes/reserve-pay";
 import { adminRoutes } from "./routes/admin";
 import { razorpayWebhook } from "./webhooks/razorpay";
 import type { AppEnv } from "./types";
@@ -39,6 +40,7 @@ app.route("/api/products", productRoutes);
 app.route("/api/addresses", addressRoutes);
 app.route("/api/cart", cartRoutes);
 app.route("/api/orders", orderRoutes);
+app.route("/api/reserve-pay", reservePayRoutes);
 
 // Admin dashboard surface — its own auth (POST /api/admin/login + requireAdmin), separate
 // from the human-session JWT above.

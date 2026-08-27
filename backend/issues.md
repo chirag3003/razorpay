@@ -1,5 +1,37 @@
 # Known gaps found while integrating `web/`
 
+## Blocked: UPI Reserve Pay needs Razorpay account activation
+
+The Reserve Pay rail (`API.md` §6.11) is implemented and typechecks, but **cannot be exercised
+end to end on the current test account**. `POST /v1/payments/create/json` — Razorpay's
+server-to-server payment API, which both the authorisation payment and every debit go through —
+answers:
+
+```
+400 BAD_REQUEST_ERROR
+"The requested URL was not found on the server."   source: "internal"
+```
+
+Verified with direct `curl` against the account keys, not just through our code:
+
+- `POST /v1/customers` → **200**
+- `POST /v1/orders` with `token.type: single_block_multiple_debit` → **200** (SBMD orders are fine)
+- `POST /v1/payments/create/json` with the SBMD authorisation body → **400**, URL not found
+- `POST /v1/payments/create/json` with a plain non-recurring UPI collect body → **400**, same
+
+The last probe is the decisive one: the endpoint is unavailable for *any* payment, recurring or
+not, so this is account entitlement, not our payload and not an SBMD-specific problem.
+
+**To unblock:** raise a request with Razorpay support to enable, on this account:
+1. the **S2S JSON API** (`/payments/create/json`) — this is the actual blocker
+2. **UPI Reserve Pay (SBMD)**
+3. **`save_vpa`** — the docs note UPI tokens are omitted from token responses without it
+
+Until then `POST /api/reserve-pay/mandates` returns `502 PAYMENT_GATEWAY_ERROR` carrying
+Razorpay's description verbatim, and no mandate can reach `confirmed`. Everything that does not
+need the gateway is verified working: validation, the guard chain and its error codes, the
+one-live-mandate-per-user index, abandoned-mandate expiry, audit rows, and the webhook router.
+
 ## ~~Missing: profile update endpoint~~ — resolved
 
 `PATCH /api/auth/me` is implemented (`src/routes/auth.ts`, `userService.updateUser`), matching

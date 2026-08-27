@@ -239,9 +239,17 @@ DELETE /api/cart/items/:itemId           auth
 DELETE /api/cart                         auth     clears all items
 POST   /api/cart/checkout/initiate       auth     creates a Razorpay Order
 POST   /api/cart/checkout/verify         auth     verifies signature, creates the Order
+POST   /api/cart/checkout/reserve-pay    auth     headless: debits a mandate, returns the Order
 
 GET    /api/orders                       auth
 GET    /api/orders/:id                   auth
+
+POST   /api/reserve-pay/mandates         auth     blocks funds; returns the UPI approval link
+GET    /api/reserve-pay/mandates         auth     all mandates, newest first
+GET    /api/reserve-pay/mandates/current auth     the live mandate, or null
+GET    /api/reserve-pay/mandates/:id     auth     re-syncs from Razorpay; poll this
+POST   /api/reserve-pay/mandates/:id/revoke  auth stops further debits (local only)
+POST   /api/reserve-pay/mandates/debit   auth     test harness: debit without an order
 
 POST   /api/admin/login                  public   password -> admin JWT
 GET    /api/admin/dashboard              admin    summary counts + recent orders
@@ -575,6 +583,126 @@ Read-only. Query: `q` (substring on name or email), `page` (1), `pageSize` (max 
 
 ---
 
+### 6.11 UPI Reserve Pay (SBMD)
+
+> **Blocked on Razorpay account activation.** Every endpoint below is implemented, but
+> `/v1/payments/create/json` (Razorpay's server-to-server payment API) is **not enabled on this
+> test account** — it answers `400 BAD_REQUEST_ERROR "The requested URL was not found on the
+> server."` for *any* payment, recurring or not. Creating the SBMD authorisation order already
+> works, so the blocker is one support request: ask Razorpay to enable the S2S JSON API, UPI
+> Reserve Pay (SBMD), and `save_vpa` on the account. Until then `POST /api/reserve-pay/mandates`
+> returns `502 PAYMENT_GATEWAY_ERROR`.
+
+**What this is.** Reserve Pay blocks a customer's funds once, against a single UPI PIN approval,
+and lets the merchant debit that block repeatedly with no further customer interaction. That
+headless second half is the point: a chat interface or an external AI agent cannot drive a
+Razorpay Checkout popup, so every AI-initiated payment runs on this rail.
+
+**Lifecycle.**
+```
+1. POST /api/reserve-pay/mandates          -> mandate (status "pending") + intentUrl
+2. Customer opens intentUrl in their UPI app and approves with their PIN   <- the only human step
+3. GET  /api/reserve-pay/mandates/:id      -> poll until status becomes "confirmed"
+4. POST /api/cart/checkout/reserve-pay     -> debits the block, returns a real Order. Repeat
+                                              freely until the block is exhausted or expires.
+```
+
+**Mandate shape** (returned by every endpoint in this section):
+```json
+{
+  "id": "<uuid>",
+  "status": "pending | confirmed | paused | failed | revoked | expired | exhausted",
+  "maxAmountPaise": 50000,
+  "amountBlockedPaise": 50000,
+  "amountDebitedPaise": 12500,
+  "remainingPaise": 37500,
+  "amountBlockedInRupees": 500,
+  "remainingInRupees": 375,
+  "vpa": "9876543210@upi",
+  "failureReason": null,
+  "intentUrl": "upi://mandate?pa=...",
+  "intentLinks": {
+    "generic": "upi://mandate?pa=...",
+    "gpay": "gpay://upi/mandate?pa=...",
+    "phonepe": "phonepe://mandate?pa=...",
+    "paytm": "paytmmp://mandate?pa=...",
+    "bhim": "bhim://upi/mandate?pa=...",
+    "cred": "credpay://upi/mandate?pa=...",
+    "whatsapp": "whatsapp-consumer://upi/mandate?pa=..."
+  },
+  "expiresAt": "2026-11-25T...",
+  "confirmedAt": null,
+  "createdAt": "2026-08-27T..."
+}
+```
+Amounts are in **paise** here, unlike the rest of this API — these fields are reconciled directly
+against Razorpay's own figures, so they carry Razorpay's unit. The `*InRupees` fields are
+provided for display. `intentLinks` is `null` until Razorpay returns a deep link, and individual
+app links let a client skip the OS app chooser; `generic` is the safe default.
+
+**`POST /api/reserve-pay/mandates`** — body `{ "amountInRupees": 500, "expiryDays": 90 }`.
+`amountInRupees` is a whole number, max **10,000** (regulatory cap). `expiryDays` is optional,
+max **90**, defaults to **30**. Returns `201 { mandate }` with `status: "pending"` and the
+`intentUrl` to send the customer to.
+- `409 CONFLICT` if the account already has a live mandate — revoke it first. One live mandate
+  per user, enforced by a partial unique index, so two concurrent calls can't double-block funds.
+  A `pending` mandate the customer abandoned is aged out automatically after 15 minutes, so an
+  unfinished approval never locks them out permanently.
+- `400 MANDATE_AMOUNT_EXCEEDED` / Zod `400` if the amount or expiry is out of range.
+- `502 PAYMENT_GATEWAY_ERROR` carries Razorpay's own description verbatim.
+
+**`GET /api/reserve-pay/mandates/current`** — `200 { "mandate": null }` when the caller has none.
+This is what a checkout screen calls to decide whether to offer Reserve Pay at all.
+
+**`GET /api/reserve-pay/mandates/:id`** — **re-syncs from Razorpay before responding**, so it
+writes as well as reads. This is the endpoint to poll while the customer is approving: it is what
+picks up the token id, flips `status` to `confirmed`, and fills in `amountBlockedPaise` and
+`vpa`. Terminal mandates short-circuit and cost no Razorpay round-trip.
+
+**`GET /api/reserve-pay/mandates`** — `200 { mandates: [...] }`, newest first, including terminal
+ones. Mandate history is kept, not overwritten.
+
+**`POST /api/reserve-pay/mandates/:id/revoke`** — `200 { mandate }` with `status: "revoked"`.
+Cancels the mandate at Razorpay, which **unblocks the customer's remaining funds and credits
+them back instantly**, and stops us debiting it. If Razorpay/NPCI rejects the cancellation the
+mandate is still marked revoked locally and `failureReason` carries the gateway's reason — in
+that case the funds stay blocked until Razorpay auto-reverses them 10 minutes before expiry, so
+surface `failureReason` if it is set. `409 MANDATE_NOT_ACTIVE` if it was already terminal.
+
+**`POST /api/reserve-pay/mandates/debit`** — body `{ "amountInRupees": 50, "description": "..." }`.
+Charges the caller's live mandate **without creating an order**. This is a test harness for
+exercising the rail without a cart; real purchases go through the checkout endpoint below, which
+produces an order row for the money it moves. Returns `201` with the debit and Razorpay ids.
+
+**`POST /api/cart/checkout/reserve-pay`** — the headless counterpart to §6.8. Body is identical
+to `/checkout/initiate`: `{ "addressId": "<uuid>", "deliverySlot": "Today, 4-6 PM" }`. Returns
+`201 { order }` — the **same** `Order` shape §6.8 returns. No `keyId`, no Checkout.js, no
+signature round-trip; one call in, a finished order out.
+
+It runs the same cart and address validation as `/checkout/initiate` (so `400 EMPTY_CART` and
+`400 INVALID_ADDRESS` behave identically), then the mandate guard chain **in this order**:
+
+| Error | Code | Meaning |
+|---|---|---|
+| `409` | `MANDATE_NOT_ACTIVE` | no mandate, or it is paused/revoked/failed/expired/exhausted |
+| `409` | `MANDATE_EXPIRED` | past `expiresAt` |
+| `400` | `MANDATE_AMOUNT_EXCEEDED` | this single charge exceeds the per-transaction cap |
+| `402` | `INSUFFICIENT_BLOCKED_BALANCE` | not enough left in the block |
+
+The order matters: a caller learns its mandate is unusable before it learns anything about
+balances. The balance is re-synced from Razorpay before the check, so it is never decided on a
+stale local count.
+
+**Webhooks.** Reserve Pay adds three kinds of Razorpay order to the system (browser checkout,
+mandate authorisation, mandate debit) and they all arrive on the same `/webhooks/razorpay`
+endpoint, which now dispatches on order id. `payment.authorized` is handled alongside
+`payment.captured` (a Reserve Pay authorisation often reports as the former), as are
+`token.confirmed` / `token.rejected` / `token.cancelled` / `token.paused`. Nothing here is
+client-facing, but note that a mandate can become `confirmed` via the webhook without anyone
+polling.
+
+---
+
 ## 7. Things intentionally not built (don't assume these exist)
 
 - No password reset / email verification / OAuth — signup+login only.
@@ -586,5 +714,13 @@ Read-only. Query: `q` (substring on name or email), `page` (1), `pageSize` (max 
   accounts or roles/RBAC, no order-status transition rules, no editing/deleting users, no
   audit-log read endpoint, no CSV/export, no login rate-limiting. Customer-facing order
   tracking is still not exposed (`status` changes are admin-only and not surfaced to the buyer).
-- No agent/AI checkout path — that's the deliberately-deferred next phase; see
-  `backend/CLAUDE.md` for how the service layer is shaped to make that additive later.
+- No agent/AI checkout path yet. The *payment rail* for it exists (UPI Reserve Pay, §6.11) but
+  nothing conversational calls it — there is no chat endpoint, no agent token, and no A2A/MCP
+  interface. `POST /api/cart/checkout/reserve-pay` is today driven by an ordinary logged-in
+  session, not by an agent.
+- No Cart Mandate. `backend/CLAUDE.md` describes a signed per-transaction
+  `{cart_contents, total_amount, token_id, timestamp}` record; it binds a purchase to an
+  *agent's* authority and is deferred with the rest of the agent-token work.
+- **Reserve Pay is blocked on account activation.** See the note at the top of §6.11 — the code
+  is complete but `/v1/payments/create/json` is not enabled on the test account, so no mandate
+  can be authorised yet.
