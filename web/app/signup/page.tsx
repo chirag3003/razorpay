@@ -17,17 +17,48 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { signupSchema, type SignupFormValues } from "@/lib/validation";
+import { useAuthStore } from "@/store/auth-store";
+import { ApiError, ApiValidationError } from "@/lib/api/client";
 
 export default function SignupPage() {
   const router = useRouter();
+  const signup = useAuthStore((state) => state.signup);
   const form = useForm<SignupFormValues>({
     resolver: zodResolver(signupSchema),
     defaultValues: { name: "", email: "", phone: "", password: "", confirmPassword: "" },
   });
 
-  function onSubmit() {
-    toast.success("Account created successfully");
-    router.push("/account");
+  async function onSubmit(values: SignupFormValues) {
+    try {
+      await signup({
+        name: values.name,
+        email: values.email,
+        phone: values.phone,
+        password: values.password,
+      });
+      toast.success("Account created successfully");
+      router.push("/account");
+    } catch (err) {
+      if (err instanceof ApiValidationError) {
+        for (const fieldError of err.fieldErrors) {
+          form.setError(fieldError.path as keyof SignupFormValues, {
+            message: fieldError.message,
+          });
+        }
+        return;
+      }
+      if (err instanceof ApiError && err.code === "CONFLICT") {
+        form.setError("email", {
+          message: "This email is already registered",
+        });
+        return;
+      }
+      if (err instanceof ApiError) {
+        form.setError("root", { message: err.message });
+        return;
+      }
+      form.setError("root", { message: "Something went wrong. Try again." });
+    }
   }
 
   return (
@@ -48,6 +79,11 @@ export default function SignupPage() {
             className="space-y-4"
             noValidate
           >
+            {form.formState.errors.root && (
+              <p className="text-sm text-destructive">
+                {form.formState.errors.root.message}
+              </p>
+            )}
             <FormField
               control={form.control}
               name="name"
@@ -117,7 +153,11 @@ export default function SignupPage() {
                 </FormItem>
               )}
             />
-            <Button type="submit" className="w-full">
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={form.formState.isSubmitting}
+            >
               Create account
             </Button>
           </form>

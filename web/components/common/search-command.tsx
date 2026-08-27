@@ -12,12 +12,14 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { InputGroup, InputGroupAddon, InputGroupText } from "@/components/ui/input-group";
-import { searchProducts } from "@/lib/queries";
+import { searchProducts } from "@/lib/api/catalog";
 import { formatPrice } from "@/lib/utils";
+import type { Product } from "@/lib/types";
 
 export function SearchCommand() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Product[]>([]);
   const router = useRouter();
 
   useEffect(() => {
@@ -31,7 +33,22 @@ export function SearchCommand() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const results = searchProducts(query, 8);
+  useEffect(() => {
+    if (!query.trim()) {
+      setResults([]);
+      return;
+    }
+    let cancelled = false;
+    const timeout = setTimeout(() => {
+      searchProducts(query, 8).then((products) => {
+        if (!cancelled) setResults(products);
+      });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, [query]);
 
   function goToProduct(slug: string) {
     setOpen(false);

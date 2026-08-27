@@ -1,6 +1,6 @@
 "use client";
 
-import { Smartphone, CreditCard, Landmark, Banknote } from "lucide-react";
+import { Smartphone, CreditCard, Landmark } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { cn } from "@/lib/utils";
@@ -9,8 +9,7 @@ export const PAYMENT_METHODS = [
   { id: "upi", label: "UPI", description: "Pay via any UPI app", icon: Smartphone },
   { id: "card", label: "Credit / Debit Card", description: "Visa, Mastercard, Rupay", icon: CreditCard },
   { id: "netbanking", label: "Net Banking", description: "All major banks supported", icon: Landmark },
-  { id: "cod", label: "Cash on Delivery", description: "Pay when your order arrives", icon: Banknote },
-];
+] as const;
 
 export function PaymentMethodSelect({
   value,

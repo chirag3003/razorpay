@@ -1,76 +1,75 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
-import type { CartItem } from "@/lib/types";
-import { getProductById } from "@/lib/queries";
+import * as cartApi from "@/lib/api/cart";
+import { useAuthStore } from "@/store/auth-store";
+import type { Cart } from "@/lib/types";
 
 type CartState = {
-  items: CartItem[];
-  addItem: (productId: string, qty?: number) => void;
-  removeItem: (productId: string) => void;
-  updateQty: (productId: string, qty: number) => void;
-  clear: () => void;
+  cart: Cart | null;
+  status: "idle" | "loading" | "ready" | "error";
+  fetchCart: () => Promise<void>;
+  addItem: (productId: string, qty?: number) => Promise<void>;
+  updateQty: (itemId: string, qty: number) => Promise<void>;
+  removeItem: (itemId: string) => Promise<void>;
+  clear: () => Promise<void>;
+  reset: () => void;
 };
 
-export const useCartStore = create<CartState>()(
-  persist(
-    (set) => ({
-      items: [],
-      addItem: (productId, qty = 1) =>
-        set((state) => {
-          const existing = state.items.find(
-            (item) => item.productId === productId
-          );
-          if (existing) {
-            return {
-              items: state.items.map((item) =>
-                item.productId === productId
-                  ? { ...item, qty: item.qty + qty }
-                  : item
-              ),
-            };
-          }
-          return { items: [...state.items, { productId, qty }] };
-        }),
-      removeItem: (productId) =>
-        set((state) => ({
-          items: state.items.filter((item) => item.productId !== productId),
-        })),
-      updateQty: (productId, qty) =>
-        set((state) => {
-          if (qty <= 0) {
-            return {
-              items: state.items.filter((item) => item.productId !== productId),
-            };
-          }
-          return {
-            items: state.items.map((item) =>
-              item.productId === productId ? { ...item, qty } : item
-            ),
-          };
-        }),
-      clear: () => set({ items: [] }),
-    }),
-    { name: "freshcart-cart" }
-  )
-);
+function requireToken(): string {
+  const token = useAuthStore.getState().token;
+  if (!token) throw new Error("Not authenticated");
+  return token;
+}
+
+export const useCartStore = create<CartState>()((set) => ({
+  cart: null,
+  status: "idle",
+
+  fetchCart: async () => {
+    const token = useAuthStore.getState().token;
+    if (!token) return;
+    set({ status: "loading" });
+    try {
+      const cart = await cartApi.fetchCart(token);
+      set({ cart, status: "ready" });
+    } catch {
+      set({ status: "error" });
+    }
+  },
+
+  addItem: async (productId, qty = 1) => {
+    const cart = await cartApi.addItem(requireToken(), productId, qty);
+    set({ cart, status: "ready" });
+  },
+
+  updateQty: async (itemId, qty) => {
+    const cart = await cartApi.updateQty(requireToken(), itemId, qty);
+    set({ cart, status: "ready" });
+  },
+
+  removeItem: async (itemId) => {
+    const cart = await cartApi.removeItem(requireToken(), itemId);
+    set({ cart, status: "ready" });
+  },
+
+  clear: async () => {
+    const cart = await cartApi.clearCart(requireToken());
+    set({ cart, status: "ready" });
+  },
+
+  reset: () => set({ cart: null, status: "idle" }),
+}));
 
 export function useCartLines() {
-  const items = useCartStore((state) => state.items);
-  return items
-    .map((item) => {
-      const product = getProductById(item.productId);
-      if (!product) return null;
-      return { product, qty: item.qty };
-    })
-    .filter((line): line is { product: NonNullable<typeof line>["product"]; qty: number } => line !== null);
+  return useCartStore((state) => state.cart?.items ?? []);
 }
 
 export function useCartSummary() {
-  const lines = useCartLines();
-  const itemCount = lines.reduce((sum, line) => sum + line.qty, 0);
-  const subtotal = lines.reduce(
-    (sum, line) => sum + line.product.price * line.qty,
-    0
-  );
-  return { itemCount, subtotal, lines };
+  const cart = useCartStore((state) => state.cart);
+  return {
+    lines: cart?.items ?? [],
+    itemCount: cart?.itemCount ?? 0,
+    subtotal: cart?.subtotal ?? 0,
+    deliveryFee: cart?.deliveryFee ?? 0,
+    total: cart?.total ?? 0,
+  };
 }

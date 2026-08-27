@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
@@ -17,17 +17,38 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { loginSchema, type LoginFormValues } from "@/lib/validation";
+import { useAuthStore } from "@/store/auth-store";
+import { ApiError, ApiValidationError } from "@/lib/api/client";
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const login = useAuthStore((state) => state.login);
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
     defaultValues: { email: "", password: "" },
   });
 
-  function onSubmit() {
-    toast.success("Logged in successfully");
-    router.push("/account");
+  async function onSubmit(values: LoginFormValues) {
+    try {
+      await login(values.email, values.password);
+      toast.success("Logged in successfully");
+      router.push(searchParams.get("next") ?? "/account");
+    } catch (err) {
+      if (err instanceof ApiValidationError) {
+        for (const fieldError of err.fieldErrors) {
+          form.setError(fieldError.path as keyof LoginFormValues, {
+            message: fieldError.message,
+          });
+        }
+        return;
+      }
+      if (err instanceof ApiError) {
+        form.setError("root", { message: err.message });
+        return;
+      }
+      form.setError("root", { message: "Something went wrong. Try again." });
+    }
   }
 
   return (
@@ -46,6 +67,11 @@ export default function LoginPage() {
             className="space-y-4"
             noValidate
           >
+            {form.formState.errors.root && (
+              <p className="text-sm text-destructive">
+                {form.formState.errors.root.message}
+              </p>
+            )}
             <FormField
               control={form.control}
               name="email"
@@ -76,7 +102,11 @@ export default function LoginPage() {
                 </FormItem>
               )}
             />
-            <Button type="submit" className="w-full">
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={form.formState.isSubmitting}
+            >
               Login
             </Button>
           </form>

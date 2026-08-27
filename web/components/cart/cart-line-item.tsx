@@ -6,14 +6,16 @@ import { Button } from "@/components/ui/button";
 import { QuantityStepper } from "@/components/product/quantity-stepper";
 import { useCartStore } from "@/store/cart-store";
 import { formatPrice } from "@/lib/utils";
-import type { Product } from "@/lib/types";
+import type { CartProduct } from "@/lib/types";
 
 export function CartLineItem({
+  itemId,
   product,
   qty,
   compact,
 }: {
-  product: Product;
+  itemId: string;
+  product: CartProduct;
   qty: number;
   compact?: boolean;
 }) {
@@ -50,7 +52,7 @@ export function CartLineItem({
             variant="ghost"
             size="icon-sm"
             aria-label="Remove item"
-            onClick={() => removeItem(product.id)}
+            onClick={() => removeItem(itemId)}
           >
             <X className="size-3.5" />
           </Button>
@@ -58,7 +60,7 @@ export function CartLineItem({
         <QuantityStepper
           qty={qty}
           onIncrement={() => addItem(product.id)}
-          onDecrement={() => updateQty(product.id, qty - 1)}
+          onDecrement={() => updateQty(itemId, qty - 1)}
         />
       </div>
     </div>

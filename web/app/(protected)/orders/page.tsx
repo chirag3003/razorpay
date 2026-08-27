@@ -1,16 +1,38 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { PackageCheck } from "lucide-react";
+import { Loader2, PackageCheck } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { EmptyState } from "@/components/common/empty-state";
 import { OrderStatusBadge } from "@/components/order/order-status-badge";
 import { ReorderButton } from "@/components/order/reorder-button";
-import { getOrders, getProductById } from "@/lib/queries";
+import { getOrders } from "@/lib/api/orders";
+import { useAuthStore } from "@/store/auth-store";
 import { formatPrice } from "@/lib/utils";
+import type { Order } from "@/lib/types";
 
 export default function OrdersPage() {
-  const orders = getOrders();
+  const token = useAuthStore((state) => state.token);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!token) return;
+    getOrders(token)
+      .then(setOrders)
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[50vh] items-center justify-center">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-6">
@@ -31,8 +53,7 @@ export default function OrdersPage() {
             const itemCount = order.items.reduce((sum, i) => sum + i.qty, 0);
             const previewImages = order.items
               .slice(0, 4)
-              .map((item) => getProductById(item.productId)?.image)
-              .filter((src): src is string => Boolean(src));
+              .map((item) => item.product.image);
 
             return (
               <Card key={order.id} className="p-4">

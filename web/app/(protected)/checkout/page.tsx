@@ -23,24 +23,44 @@ import { CartSummary } from "@/components/cart/cart-summary";
 import { CartLineItem } from "@/components/cart/cart-line-item";
 import { EmptyState } from "@/components/common/empty-state";
 import { useCartSummary, useCartStore } from "@/store/cart-store";
-import { getAddresses } from "@/lib/queries";
+import { useAuthStore } from "@/store/auth-store";
+import { getAddresses, createAddress } from "@/lib/api/addresses";
+import { initiateCheckout, verifyCheckout } from "@/lib/api/checkout";
+import { loadRazorpayCheckout } from "@/lib/razorpay";
+import { ApiError } from "@/lib/api/client";
 import type { Address } from "@/lib/types";
 import type { AddressFormValues } from "@/lib/validation";
 
+type PaymentMethodId = (typeof PAYMENT_METHODS)[number]["id"];
+
 export default function CheckoutPage() {
   const router = useRouter();
-  const { lines, subtotal, itemCount } = useCartSummary();
-  const clearCart = useCartStore((state) => state.clear);
+  const { lines, subtotal, deliveryFee, total, itemCount } = useCartSummary();
+  const fetchCart = useCartStore((state) => state.fetchCart);
+  const token = useAuthStore((state) => state.token);
+  const user = useAuthStore((state) => state.user);
 
   const [step, setStep] = useState(1);
-  const [addresses, setAddresses] = useState<Address[]>(() => getAddresses());
-  const [selectedAddressId, setSelectedAddressId] = useState(
-    () => addresses.find((a) => a.isDefault)?.id ?? addresses[0]?.id ?? ""
-  );
+  const [addresses, setAddresses] = useState<Address[]>([]);
+  const [addressesLoading, setAddressesLoading] = useState(true);
+  const [selectedAddressId, setSelectedAddressId] = useState("");
   const [addressDialogOpen, setAddressDialogOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState("");
-  const [selectedPayment, setSelectedPayment] = useState("");
+  const [selectedPayment, setSelectedPayment] = useState<PaymentMethodId | "">("");
   const [placingOrder, setPlacingOrder] = useState(false);
+
+  useEffect(() => {
+    if (!token) return;
+    getAddresses(token)
+      .then((fetched) => {
+        setAddresses(fetched);
+        setSelectedAddressId(
+          fetched.find((a) => a.isDefault)?.id ?? fetched[0]?.id ?? ""
+        );
+      })
+      .catch(() => toast.error("Couldn't load your addresses"))
+      .finally(() => setAddressesLoading(false));
+  }, [token]);
 
   useEffect(() => {
     if (itemCount === 0 && !placingOrder) {
@@ -67,19 +87,69 @@ export default function CheckoutPage() {
     (p) => p.id === selectedPayment
   );
 
-  function handleAddAddress(values: AddressFormValues) {
-    const newAddress: Address = { id: `addr-${Date.now()}`, ...values };
-    setAddresses((prev) => [...prev, newAddress]);
-    setSelectedAddressId(newAddress.id);
-    setAddressDialogOpen(false);
-    toast.success("Address saved");
+  async function handleAddAddress(values: AddressFormValues) {
+    if (!token) return;
+    try {
+      const address = await createAddress(token, values);
+      setAddresses((prev) => [...prev, address]);
+      setSelectedAddressId(address.id);
+      setAddressDialogOpen(false);
+      toast.success("Address saved");
+    } catch {
+      toast.error("Couldn't save address");
+    }
   }
 
-  function placeOrder() {
+  async function placeOrder() {
+    if (!token || !user || !selectedAddress || !selectedSlotLabel || !selectedPayment) {
+      return;
+    }
     setPlacingOrder(true);
-    const orderNumber = `FC-${Math.floor(100000 + Math.random() * 900000)}`;
-    clearCart();
-    router.push(`/checkout/success?order=${orderNumber}`);
+
+    try {
+      const init = await initiateCheckout(token, {
+        addressId: selectedAddress.id,
+        deliverySlot: `${selectedSlotLabel.day}, ${selectedSlotLabel.time}`,
+        paymentMethod: selectedPayment,
+      });
+
+      await loadRazorpayCheckout();
+
+      new window.Razorpay!({
+        key: init.keyId,
+        amount: init.amount,
+        currency: init.currency,
+        order_id: init.razorpayOrderId,
+        name: "FreshCart",
+        prefill: { name: user.name, email: user.email, contact: user.phone },
+        handler: async (response) => {
+          try {
+            const order = await verifyCheckout(token, {
+              razorpayOrderId: response.razorpay_order_id,
+              razorpayPaymentId: response.razorpay_payment_id,
+              razorpaySignature: response.razorpay_signature,
+            });
+            await fetchCart();
+            router.push(`/checkout/success?order=${order.orderNumber}`);
+          } catch (err) {
+            toast.error(
+              err instanceof ApiError
+                ? err.message
+                : "Payment verification failed"
+            );
+            setPlacingOrder(false);
+          }
+        },
+        modal: {
+          ondismiss: () => setPlacingOrder(false),
+        },
+      }).open();
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Couldn't start checkout"
+      );
+      setPlacingOrder(false);
+    }
   }
 
   return (
@@ -94,7 +164,11 @@ export default function CheckoutPage() {
           {step === 1 && (
             <div className="space-y-4">
               <h2 className="font-heading font-medium">Delivery address</h2>
-              {addresses.length === 0 ? (
+              {addressesLoading ? (
+                <p className="text-sm text-muted-foreground">
+                  Loading addresses…
+                </p>
+              ) : addresses.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   You have no saved addresses yet.
                 </p>
@@ -162,7 +236,7 @@ export default function CheckoutPage() {
               <h2 className="font-heading font-medium">Payment method</h2>
               <PaymentMethodSelect
                 value={selectedPayment}
-                onChange={setSelectedPayment}
+                onChange={(value) => setSelectedPayment(value as PaymentMethodId)}
               />
               <Separator />
               <div className="flex gap-3">
@@ -187,7 +261,8 @@ export default function CheckoutPage() {
               <div className="space-y-3">
                 {lines.map((line) => (
                   <CartLineItem
-                    key={line.product.id}
+                    key={line.itemId}
+                    itemId={line.itemId}
                     product={line.product}
                     qty={line.qty}
                     compact
@@ -218,11 +293,11 @@ export default function CheckoutPage() {
               <Separator />
 
               <div className="flex gap-3">
-                <Button variant="outline" onClick={() => setStep(3)}>
+                <Button variant="outline" onClick={() => setStep(3)} disabled={placingOrder}>
                   Back
                 </Button>
-                <Button className="flex-1" onClick={placeOrder}>
-                  Place Order
+                <Button className="flex-1" onClick={placeOrder} disabled={placingOrder}>
+                  {placingOrder ? "Placing order…" : "Place Order"}
                 </Button>
               </div>
             </div>
@@ -231,7 +306,7 @@ export default function CheckoutPage() {
 
         <Card className="h-fit space-y-4 p-4">
           <p className="font-heading font-medium">Order Summary</p>
-          <CartSummary subtotal={subtotal} />
+          <CartSummary subtotal={subtotal} deliveryFee={deliveryFee} total={total} />
         </Card>
       </div>
 

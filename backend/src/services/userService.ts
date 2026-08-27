@@ -4,7 +4,7 @@ import { db } from "../db";
 import { users } from "../db/schema";
 import { ConflictError, NotFoundError, UnauthorizedError } from "../errors";
 import { env } from "../config/env";
-import type { SignupInput } from "../schemas/auth.schema";
+import type { SignupInput, UpdateProfileInput } from "../schemas/auth.schema";
 
 const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
@@ -15,7 +15,8 @@ export async function createUser(input: SignupInput) {
     .where(eq(users.email, input.email))
     .limit(1);
 
-  if (existing) throw new ConflictError("An account with this email already exists");
+  if (existing)
+    throw new ConflictError("An account with this email already exists");
 
   const passwordHash = await Bun.password.hash(input.password);
 
@@ -34,7 +35,11 @@ export async function createUser(input: SignupInput) {
 }
 
 export async function verifyCredentials(email: string, password: string) {
-  const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
 
   if (!user) throw new UnauthorizedError("Invalid email or password");
 
@@ -50,6 +55,29 @@ export async function getUserById(id: string) {
   return user;
 }
 
+export async function updateUser(userId: string, input: UpdateProfileInput) {
+  if (input.email) {
+    const [existing] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, input.email))
+      .limit(1);
+
+    if (existing && existing.id !== userId) {
+      throw new ConflictError("An account with this email already exists");
+    }
+  }
+
+  const [user] = await db
+    .update(users)
+    .set(input)
+    .where(eq(users.id, userId))
+    .returning();
+
+  if (!user) throw new NotFoundError("User");
+  return user;
+}
+
 export function issueToken(userId: string) {
   const exp = Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS;
   return sign({ sub: userId, exp }, env.JWT_SECRET, "HS256");
@@ -58,7 +86,8 @@ export function issueToken(userId: string) {
 export async function verifyToken(token: string) {
   try {
     const payload = await verify(token, env.JWT_SECRET, "HS256");
-    if (typeof payload.sub !== "string") throw new UnauthorizedError("Invalid token");
+    if (typeof payload.sub !== "string")
+      throw new UnauthorizedError("Invalid token");
     return payload.sub;
   } catch {
     throw new UnauthorizedError("Invalid or expired token");

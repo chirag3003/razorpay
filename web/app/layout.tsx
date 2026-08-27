@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { Header } from "@/components/layout/header";
 import { Footer } from "@/components/layout/footer";
+import { AuthHydrator } from "@/components/auth/auth-hydrator";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
@@ -46,6 +47,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <Footer />
           </TooltipProvider>
           <Toaster position="top-center" richColors />
+          <AuthHydrator />
         </ThemeProvider>
       </body>
     </html>

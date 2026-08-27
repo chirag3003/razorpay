@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import * as Icons from "lucide-react";
 import {
@@ -8,10 +10,10 @@ import {
   NavigationMenuList,
   NavigationMenuTrigger,
 } from "@/components/ui/navigation-menu";
-import { getCategories } from "@/lib/queries";
+import { useCategoriesStore } from "@/store/categories-store";
 
 export function CategoryNav() {
-  const categories = getCategories();
+  const categories = useCategoriesStore((state) => state.categories);
   const quickLinks = categories.slice(0, 5);
 
   return (

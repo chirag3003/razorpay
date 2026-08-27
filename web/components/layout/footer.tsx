@@ -5,7 +5,7 @@ import { Sprout, Truck, ShieldCheck, Wallet } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { getCategories } from "@/lib/queries";
+import { useCategoriesStore } from "@/store/categories-store";
 
 const perks = [
   { icon: Truck, label: "Fast delivery", description: "Delivered in under 60 minutes" },
@@ -15,7 +15,10 @@ const perks = [
 ];
 
 export function Footer() {
-  const categories = getCategories().slice(0, 6);
+  const categories = useCategoriesStore((state) => state.categories).slice(
+    0,
+    6
+  );
 
   return (
     <footer className="mt-16 border-t bg-muted/40">

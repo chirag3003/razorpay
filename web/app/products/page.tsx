@@ -11,7 +11,7 @@ import { ProductFilters } from "@/components/product/product-filters";
 import { ProductSort } from "@/components/product/product-sort";
 import { ProductPagination } from "@/components/product/product-pagination";
 import { MobileFilters } from "@/components/product/mobile-filters";
-import { getCategories, getProducts } from "@/lib/queries";
+import { getCategories, getProducts } from "@/lib/api/catalog";
 import { toArray, toNumber, toSingle, toURLSearchParams } from "@/lib/search-params";
 import type { RawSearchParams } from "@/lib/search-params";
 import type { SortOption } from "@/lib/types";
@@ -24,7 +24,6 @@ export default async function ProductsPage({
   searchParams: Promise<RawSearchParams>;
 }) {
   const raw = await searchParams;
-  const categories = getCategories();
 
   const categorySlugs = toArray(raw.category);
   const tags = toArray(raw.tag);
@@ -35,22 +34,23 @@ export default async function ProductsPage({
   const sort = (toSingle(raw.sort) as SortOption | undefined) ?? "popularity";
   const page = Math.max(1, toNumber(raw.page) ?? 1);
 
-  const allResults = getProducts({
-    categorySlugs,
-    tags,
-    query,
-    inStockOnly,
-    minPrice,
-    maxPrice,
-    sort,
-  });
+  const [categories, { items: results, total }] = await Promise.all([
+    getCategories(),
+    getProducts({
+      categorySlugs,
+      tags,
+      query,
+      inStockOnly,
+      minPrice,
+      maxPrice,
+      sort,
+      page,
+      pageSize: PAGE_SIZE,
+    }),
+  ]);
 
-  const totalPages = Math.max(1, Math.ceil(allResults.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const results = allResults.slice(
-    (currentPage - 1) * PAGE_SIZE,
-    currentPage * PAGE_SIZE
-  );
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -76,7 +76,7 @@ export default async function ProductsPage({
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
-              {allResults.length} product{allResults.length !== 1 && "s"}{" "}
+              {total} product{total !== 1 && "s"}{" "}
               {query && <>for &quot;{query}&quot;</>}
             </p>
             <div className="flex items-center gap-2">

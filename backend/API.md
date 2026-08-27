@@ -198,6 +198,7 @@ not the live `product.price` (which can have changed since).
 POST   /api/auth/signup                  public
 POST   /api/auth/login                   public
 GET    /api/auth/me                      auth
+PATCH  /api/auth/me                      auth
 
 GET    /api/categories                   public
 GET    /api/categories/:slug             public
@@ -246,6 +247,13 @@ Request: `{ "email": "asha@example.com", "password": "..." }`
 ### 6.3 `GET /api/auth/me`
 Auth required. `200 { "user": {...} }`. Use on app load to validate a stored token / rehydrate
 the session.
+
+### 6.3a `PATCH /api/auth/me`
+Auth required. Body is any subset of `{ "name": string, "email": string, "phone": string }` —
+send only the fields being changed. `200 { "user": {...} }` (same `User` shape as everywhere
+else). `409 CONFLICT` if `email` is set to one already used by a different account (same
+non-enumerating behavior as signup — see §3). Password is not changeable via this endpoint (no
+change-password flow exists yet).
 
 ### 6.4 Categories
 - `GET /api/categories` → `200 { "categories": Category[] }`, alphabetical by name.

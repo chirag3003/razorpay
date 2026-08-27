@@ -18,3 +18,16 @@ export const loginSchema = z.object({
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
+
+export const updateProfileSchema = z
+  .object({
+    name: z.string().min(2, "Enter your full name"),
+    email: z.email("Enter a valid email address"),
+    phone: z
+      .string()
+      .min(10, "Enter a valid phone number")
+      .max(15, "Enter a valid phone number"),
+  })
+  .partial();
+
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

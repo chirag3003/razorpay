@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -27,30 +27,55 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { AddressForm } from "@/components/checkout/address-form";
-import { getAddresses, getOrders } from "@/lib/queries";
-import { defaultAddress } from "@/data/orders";
+import {
+  getAddresses,
+  createAddress,
+  updateAddress,
+  deleteAddress,
+} from "@/lib/api/addresses";
+import { updateProfile } from "@/lib/api/auth";
+import { getOrders } from "@/lib/api/orders";
+import { useAuthStore } from "@/store/auth-store";
 import { profileSchema, type ProfileFormValues } from "@/lib/validation";
 import type { AddressFormValues } from "@/lib/validation";
 import type { Address } from "@/lib/types";
 
 export default function AccountPage() {
   const router = useRouter();
-  const [addresses, setAddresses] = useState<Address[]>(() => getAddresses());
+  const user = useAuthStore((state) => state.user);
+  const token = useAuthStore((state) => state.token);
+  const logout = useAuthStore((state) => state.logout);
+
+  const [addresses, setAddresses] = useState<Address[]>([]);
+  const [orderCount, setOrderCount] = useState(0);
   const [editingAddress, setEditingAddress] = useState<Address | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const orderCount = getOrders().length;
+
+  useEffect(() => {
+    if (!token) return;
+    getAddresses(token).then(setAddresses).catch(() => {
+      toast.error("Couldn't load your addresses");
+    });
+    getOrders(token)
+      .then((orders) => setOrderCount(orders.length))
+      .catch(() => {});
+  }, [token]);
 
   const form = useForm<ProfileFormValues>({
     resolver: zodResolver(profileSchema),
-    defaultValues: {
-      name: defaultAddress.name,
-      email: "aarav.sharma@example.com",
-      phone: defaultAddress.phone,
-    },
+    values: user
+      ? { name: user.name, email: user.email, phone: user.phone }
+      : undefined,
   });
 
-  function onProfileSubmit() {
-    toast.success("Profile updated");
+  async function onProfileSubmit(values: ProfileFormValues) {
+    if (!token) return;
+    try {
+      await updateProfile(token, values);
+      toast.success("Profile updated");
+    } catch {
+      toast.error("Profile editing isn't available yet");
+    }
   }
 
   function openNewAddress() {
@@ -63,44 +88,52 @@ export default function AccountPage() {
     setDialogOpen(true);
   }
 
-  function handleAddressSubmit(values: AddressFormValues) {
-    if (editingAddress) {
-      setAddresses((prev) =>
-        prev.map((a) =>
-          a.id === editingAddress.id ? { ...editingAddress, ...values } : a
-        )
-      );
-      toast.success("Address updated");
-    } else {
-      setAddresses((prev) => [
-        ...prev,
-        { id: `addr-${Date.now()}`, ...values },
-      ]);
-      toast.success("Address added");
+  async function handleAddressSubmit(values: AddressFormValues) {
+    if (!token) return;
+    try {
+      if (editingAddress) {
+        const updated = await updateAddress(token, editingAddress.id, values);
+        setAddresses((prev) =>
+          prev.map((a) => (a.id === updated.id ? updated : a))
+        );
+        toast.success("Address updated");
+      } else {
+        const created = await createAddress(token, values);
+        setAddresses((prev) => [...prev, created]);
+        toast.success("Address added");
+      }
+      setDialogOpen(false);
+    } catch {
+      toast.error("Couldn't save address");
     }
-    setDialogOpen(false);
   }
 
-  function removeAddress(id: string) {
-    setAddresses((prev) => prev.filter((a) => a.id !== id));
-    toast.success("Address removed");
+  async function removeAddress(id: string) {
+    if (!token) return;
+    try {
+      await deleteAddress(token, id);
+      setAddresses((prev) => prev.filter((a) => a.id !== id));
+      toast.success("Address removed");
+    } catch {
+      toast.error("Couldn't remove address");
+    }
   }
+
+  if (!user) return null;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-4 py-6">
       <div className="flex items-center gap-4">
         <Avatar size="lg">
           <AvatarFallback>
-            {defaultAddress.name
+            {user.name
               .split(" ")
               .map((n) => n[0])
               .join("")}
           </AvatarFallback>
         </Avatar>
         <div>
-          <h1 className="font-heading text-xl font-semibold">
-            {defaultAddress.name}
-          </h1>
+          <h1 className="font-heading text-xl font-semibold">{user.name}</h1>
           <p className="text-sm text-muted-foreground">
             {orderCount} order{orderCount !== 1 && "s"} placed
           </p>
@@ -110,6 +143,7 @@ export default function AccountPage() {
           size="sm"
           className="ml-auto"
           onClick={() => {
+            logout();
             toast.success("Logged out");
             router.push("/login");
           }}
@@ -235,7 +269,11 @@ export default function AccountPage() {
           </DialogHeader>
           <AddressForm
             key={editingAddress?.id ?? "new"}
-            defaultValues={editingAddress ?? undefined}
+            defaultValues={
+              editingAddress
+                ? { ...editingAddress, line2: editingAddress.line2 ?? undefined }
+                : undefined
+            }
             onSubmit={handleAddressSubmit}
             submitLabel={editingAddress ? "Update address" : "Save address"}
           />

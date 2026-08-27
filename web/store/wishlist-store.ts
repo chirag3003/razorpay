@@ -1,10 +1,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { getProductById } from "@/lib/queries";
+import type { Product } from "@/lib/types";
 
 type WishlistState = {
-  productIds: string[];
-  toggle: (productId: string) => void;
+  products: Product[];
+  toggle: (product: Product) => void;
   has: (productId: string) => boolean;
   clear: () => void;
 };
@@ -12,23 +12,20 @@ type WishlistState = {
 export const useWishlistStore = create<WishlistState>()(
   persist(
     (set, get) => ({
-      productIds: [],
-      toggle: (productId) =>
+      products: [],
+      toggle: (product) =>
         set((state) => ({
-          productIds: state.productIds.includes(productId)
-            ? state.productIds.filter((id) => id !== productId)
-            : [...state.productIds, productId],
+          products: state.products.some((p) => p.id === product.id)
+            ? state.products.filter((p) => p.id !== product.id)
+            : [...state.products, product],
         })),
-      has: (productId) => get().productIds.includes(productId),
-      clear: () => set({ productIds: [] }),
+      has: (productId) => get().products.some((p) => p.id === productId),
+      clear: () => set({ products: [] }),
     }),
     { name: "freshcart-wishlist" }
   )
 );
 
 export function useWishlistProducts() {
-  const productIds = useWishlistStore((state) => state.productIds);
-  return productIds
-    .map((id) => getProductById(id))
-    .filter((product): product is NonNullable<typeof product> => Boolean(product));
+  return useWishlistStore((state) => state.products);
 }

@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
-import { loginSchema, signupSchema } from "../schemas/auth.schema";
+import {
+  loginSchema,
+  signupSchema,
+  updateProfileSchema,
+} from "../schemas/auth.schema";
 import * as userService from "../services/userService";
 import { requireAuth } from "../middleware/auth";
 import type { AppEnv } from "../types";
@@ -35,3 +39,16 @@ authRoutes.get("/me", requireAuth, async (c) => {
   const user = await userService.getUserById(c.get("userId"));
   return c.json({ user: toPublicUser(user) });
 });
+
+authRoutes.patch(
+  "/me",
+  requireAuth,
+  zValidator("json", updateProfileSchema),
+  async (c) => {
+    const user = await userService.updateUser(
+      c.get("userId"),
+      c.req.valid("json"),
+    );
+    return c.json({ user: toPublicUser(user) });
+  },
+);

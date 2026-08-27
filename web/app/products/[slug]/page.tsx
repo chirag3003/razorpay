@@ -19,7 +19,7 @@ import {
   getCategoryBySlug,
   getProductBySlug,
   getRelatedProducts,
-} from "@/lib/queries";
+} from "@/lib/api/catalog";
 import { Truck, ShieldCheck, RotateCcw } from "lucide-react";
 
 export default async function ProductDetailPage({
@@ -28,14 +28,16 @@ export default async function ProductDetailPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const product = getProductBySlug(slug);
+  const product = await getProductBySlug(slug);
 
   if (!product) {
     notFound();
   }
 
-  const category = getCategoryBySlug(product.categorySlug);
-  const related = getRelatedProducts(product, 5);
+  const [category, related] = await Promise.all([
+    getCategoryBySlug(product.categorySlug),
+    getRelatedProducts(slug, 5),
+  ]);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -97,7 +99,7 @@ export default async function ProductDetailPage({
               className="h-10 flex-1 text-base"
             />
             <WishlistButton
-              productId={product.id}
+              product={product}
               className="size-10 border"
             />
           </div>

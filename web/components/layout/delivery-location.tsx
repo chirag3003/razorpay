@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { MapPin, ChevronDown } from "lucide-react";
 import {
@@ -9,9 +12,27 @@ import {
   PopoverDescription,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { defaultAddress } from "@/data/orders";
+import { useAuthStore } from "@/store/auth-store";
+import { getAddresses } from "@/lib/api/addresses";
+import type { Address } from "@/lib/types";
 
 export function DeliveryLocation() {
+  const token = useAuthStore((state) => state.token);
+  const status = useAuthStore((state) => state.status);
+  const [address, setAddress] = useState<Address | null>(null);
+
+  useEffect(() => {
+    if (!token || status !== "authenticated") {
+      setAddress(null);
+      return;
+    }
+    getAddresses(token)
+      .then((addresses) => {
+        setAddress(addresses.find((a) => a.isDefault) ?? addresses[0] ?? null);
+      })
+      .catch(() => setAddress(null));
+  }, [token, status]);
+
   return (
     <Popover>
       <PopoverTrigger
@@ -28,7 +49,7 @@ export function DeliveryLocation() {
           Deliver to
         </span>
         <span className="flex items-center gap-1 text-sm font-medium">
-          {defaultAddress.city} {defaultAddress.pincode}
+          {address ? `${address.city} ${address.pincode}` : "Select address"}
           <ChevronDown className="size-3.5" />
         </span>
       </PopoverTrigger>
@@ -36,8 +57,9 @@ export function DeliveryLocation() {
         <PopoverHeader>
           <PopoverTitle>Delivery address</PopoverTitle>
           <PopoverDescription>
-            {defaultAddress.line1}, {defaultAddress.city}, {defaultAddress.state}{" "}
-            {defaultAddress.pincode}
+            {address
+              ? `${address.line1}, ${address.city}, ${address.state} ${address.pincode}`
+              : "Add a delivery address from your account to see it here."}
           </PopoverDescription>
         </PopoverHeader>
         <Button

@@ -19,7 +19,7 @@ export function ProductCard({ product }: { product: Product }) {
           />
         </Link>
         <WishlistButton
-          productId={product.id}
+          product={product}
           className="absolute top-1.5 right-1.5"
         />
         {product.tags.includes("bestseller") && (

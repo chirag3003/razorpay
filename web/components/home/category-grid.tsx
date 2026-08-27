@@ -1,10 +1,10 @@
 import Link from "next/link";
 import * as Icons from "lucide-react";
 import { Card } from "@/components/ui/card";
-import { getCategories } from "@/lib/queries";
+import { getCategories } from "@/lib/api/catalog";
 
-export function CategoryGrid() {
-  const categories = getCategories();
+export async function CategoryGrid() {
+  const categories = await getCategories();
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">

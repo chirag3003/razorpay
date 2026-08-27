@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
-import { UserCircle, PackageCheck, Heart, LogIn, UserPlus } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { UserCircle, PackageCheck, Heart, LogIn, UserPlus, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,8 +12,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useAuthStore } from "@/store/auth-store";
 
 export function AccountMenu() {
+  const router = useRouter();
+  const user = useAuthStore((state) => state.user);
+  const logout = useAuthStore((state) => state.logout);
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -19,7 +27,7 @@ export function AccountMenu() {
         <UserCircle className="size-5" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
-        <DropdownMenuLabel>My account</DropdownMenuLabel>
+        <DropdownMenuLabel>{user ? user.name : "My account"}</DropdownMenuLabel>
         <DropdownMenuItem render={<Link href="/account" />}>
           <UserCircle />
           Profile
@@ -33,14 +41,28 @@ export function AccountMenu() {
           Wishlist
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem render={<Link href="/login" />}>
-          <LogIn />
-          Login
-        </DropdownMenuItem>
-        <DropdownMenuItem render={<Link href="/signup" />}>
-          <UserPlus />
-          Sign up
-        </DropdownMenuItem>
+        {user ? (
+          <DropdownMenuItem
+            onClick={() => {
+              logout();
+              router.push("/login");
+            }}
+          >
+            <LogOut />
+            Logout
+          </DropdownMenuItem>
+        ) : (
+          <>
+            <DropdownMenuItem render={<Link href="/login" />}>
+              <LogIn />
+              Login
+            </DropdownMenuItem>
+            <DropdownMenuItem render={<Link href="/signup" />}>
+              <UserPlus />
+              Sign up
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

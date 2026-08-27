@@ -1,17 +1,18 @@
 import { Separator } from "@/components/ui/separator";
 import { formatPrice } from "@/lib/utils";
-import { getDeliveryFee, FREE_DELIVERY_THRESHOLD } from "@/lib/constants";
+import { FREE_DELIVERY_THRESHOLD } from "@/lib/constants";
 
 export function CartSummary({
   subtotal,
+  deliveryFee,
+  total,
   discount = 0,
 }: {
   subtotal: number;
+  deliveryFee: number;
+  total: number;
   discount?: number;
 }) {
-  const deliveryFee = getDeliveryFee(subtotal);
-  const total = subtotal + deliveryFee - discount;
-
   return (
     <div className="space-y-2.5">
       <div className="flex items-center justify-between text-sm">

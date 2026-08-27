@@ -4,16 +4,17 @@ import { Heart } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useWishlistStore } from "@/store/wishlist-store";
 import { cn } from "@/lib/utils";
+import type { Product } from "@/lib/types";
 
 export function WishlistButton({
-  productId,
+  product,
   className,
 }: {
-  productId: string;
+  product: Product;
   className?: string;
 }) {
   const isWishlisted = useWishlistStore((state) =>
-    state.productIds.includes(productId)
+    state.products.some((p) => p.id === product.id)
   );
   const toggle = useWishlistStore((state) => state.toggle);
 
@@ -31,7 +32,7 @@ export function WishlistButton({
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        toggle(productId);
+        toggle(product);
       }}
     >
       <Heart

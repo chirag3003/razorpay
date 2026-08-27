@@ -1,4 +1,9 @@
-import { notFound } from "next/navigation";
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
+import Link from "next/link";
+import { Loader2, PackageX } from "lucide-react";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -9,22 +14,55 @@ import {
 } from "@/components/ui/breadcrumb";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
 import { OrderStatusBadge } from "@/components/order/order-status-badge";
 import { OrderTimeline } from "@/components/order/order-timeline";
 import { ReorderButton } from "@/components/order/reorder-button";
-import { getOrderById, getProductById } from "@/lib/queries";
+import { EmptyState } from "@/components/common/empty-state";
+import { getOrderById } from "@/lib/api/orders";
+import { useAuthStore } from "@/store/auth-store";
 import { formatPrice } from "@/lib/utils";
+import { ApiError } from "@/lib/api/client";
+import type { Order } from "@/lib/types";
 
-export default async function OrderDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  const order = getOrderById(id);
+export default function OrderDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const token = useAuthStore((state) => state.token);
+  const [order, setOrder] = useState<Order | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
 
-  if (!order) {
-    notFound();
+  useEffect(() => {
+    if (!token) return;
+    getOrderById(token, id)
+      .then(setOrder)
+      .catch((err) => {
+        if (err instanceof ApiError && err.code === "NOT_FOUND") {
+          setNotFound(true);
+        }
+      })
+      .finally(() => setLoading(false));
+  }, [token, id]);
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[50vh] items-center justify-center">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (notFound || !order) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-6">
+        <EmptyState
+          icon={PackageX}
+          title="Order not found"
+          description="This order doesn't exist or isn't yours."
+          action={{ label: "Back to orders", href: "/orders" }}
+        />
+      </div>
+    );
   }
 
   return (
@@ -69,33 +107,29 @@ export default async function OrderDetailPage({
           </Card>
 
           <Card className="divide-y p-4">
-            {order.items.map((item, index) => {
-              const product = getProductById(item.productId);
-              if (!product) return null;
-              return (
-                <div
-                  key={item.productId}
-                  className={`flex items-center gap-3 ${index > 0 ? "pt-4" : ""}`}
-                >
-                  <img
-                    src={product.image}
-                    alt={product.name}
-                    className="size-14 shrink-0 rounded-lg object-cover"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="line-clamp-1 text-sm font-medium">
-                      {product.name}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {product.unit} · Qty {item.qty}
-                    </p>
-                  </div>
-                  <p className="text-sm font-medium">
-                    {formatPrice(item.priceAtPurchase * item.qty)}
+            {order.items.map((item, index) => (
+              <div
+                key={item.productId}
+                className={`flex items-center gap-3 ${index > 0 ? "pt-4" : ""}`}
+              >
+                <img
+                  src={item.product.image}
+                  alt={item.product.name}
+                  className="size-14 shrink-0 rounded-lg object-cover"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="line-clamp-1 text-sm font-medium">
+                    {item.product.name}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {item.product.unit} · Qty {item.qty}
                   </p>
                 </div>
-              );
-            })}
+                <p className="text-sm font-medium">
+                  {formatPrice(item.priceAtPurchase * item.qty)}
+                </p>
+              </div>
+            ))}
           </Card>
         </div>
 
@@ -153,6 +187,10 @@ export default async function OrderDetailPage({
               <span>{formatPrice(order.total)}</span>
             </div>
           </Card>
+
+          <Button variant="outline" className="w-full" nativeButton={false} render={<Link href="/orders" />}>
+            Back to orders
+          </Button>
         </div>
       </div>
     </div>

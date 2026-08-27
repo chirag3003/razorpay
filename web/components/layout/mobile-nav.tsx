@@ -12,11 +12,11 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Separator } from "@/components/ui/separator";
-import { getCategories } from "@/lib/queries";
+import { useCategoriesStore } from "@/store/categories-store";
 
 export function MobileNav() {
   const [open, setOpen] = useState(false);
-  const categories = getCategories();
+  const categories = useCategoriesStore((state) => state.categories);
 
   return (
     <>

@@ -21,7 +21,7 @@ import { useCartSummary } from "@/store/cart-store";
 export function CartSheet() {
   const [open, setOpen] = useState(false);
   const router = useRouter();
-  const { lines, subtotal, itemCount } = useCartSummary();
+  const { lines, subtotal, deliveryFee, total, itemCount } = useCartSummary();
 
   return (
     <>
@@ -67,7 +67,8 @@ export function CartSheet() {
                 <div className="flex flex-col gap-4 p-4">
                   {lines.map((line) => (
                     <CartLineItem
-                      key={line.product.id}
+                      key={line.itemId}
+                      itemId={line.itemId}
                       product={line.product}
                       qty={line.qty}
                     />
@@ -75,7 +76,11 @@ export function CartSheet() {
                 </div>
               </ScrollArea>
               <SheetFooter className="gap-3 border-t bg-background p-4">
-                <CartSummary subtotal={subtotal} />
+                <CartSummary
+                  subtotal={subtotal}
+                  deliveryFee={deliveryFee}
+                  total={total}
+                />
                 <Button
                   className="w-full"
                   onClick={() => {

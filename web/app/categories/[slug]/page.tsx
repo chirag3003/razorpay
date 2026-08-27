@@ -10,16 +10,12 @@ import {
 import { ProductGrid } from "@/components/product/product-grid";
 import { ProductSort } from "@/components/product/product-sort";
 import { ProductPagination } from "@/components/product/product-pagination";
-import { getCategoryBySlug, getCategories, getProducts } from "@/lib/queries";
+import { getCategoryBySlug, getProducts } from "@/lib/api/catalog";
 import { toArray, toNumber, toURLSearchParams } from "@/lib/search-params";
 import type { RawSearchParams } from "@/lib/search-params";
 import type { SortOption } from "@/lib/types";
 
 const PAGE_SIZE = 12;
-
-export function generateStaticParams() {
-  return getCategories().map((category) => ({ slug: category.slug }));
-}
 
 export default async function CategoryPage({
   params,
@@ -29,7 +25,7 @@ export default async function CategoryPage({
   searchParams: Promise<RawSearchParams>;
 }) {
   const { slug } = await params;
-  const category = getCategoryBySlug(slug);
+  const category = await getCategoryBySlug(slug);
 
   if (!category) {
     notFound();
@@ -41,19 +37,17 @@ export default async function CategoryPage({
   const sort = (raw.sort as SortOption | undefined) ?? "popularity";
   const page = Math.max(1, toNumber(raw.page) ?? 1);
 
-  const allResults = getProducts({
+  const { items: results, total } = await getProducts({
     categorySlugs: [slug],
     tags,
     inStockOnly,
     sort,
+    page,
+    pageSize: PAGE_SIZE,
   });
 
-  const totalPages = Math.max(1, Math.ceil(allResults.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const results = allResults.slice(
-    (currentPage - 1) * PAGE_SIZE,
-    currentPage * PAGE_SIZE
-  );
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -89,7 +83,7 @@ export default async function CategoryPage({
 
       <div className="mb-4 flex items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
-          {allResults.length} product{allResults.length !== 1 && "s"}
+          {total} product{total !== 1 && "s"}
         </p>
         <ProductSort />
       </div>

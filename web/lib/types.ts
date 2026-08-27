@@ -24,16 +24,48 @@ export type Product = {
   tags: string[];
 };
 
-export type CartItem = {
-  productId: string;
+// The shape returned embedded inside a cart item or order item — the backend
+// selects the raw product row here instead of the catalog-joined shape, so
+// it carries categoryId (a raw FK) instead of categorySlug.
+export type CartProduct = Omit<Product, "categorySlug"> & {
+  categoryId: string;
+};
+
+export type CartLine = {
+  itemId: string;
   qty: number;
+  product: CartProduct;
+};
+
+export type Cart = {
+  cartId: string;
+  items: CartLine[];
+  itemCount: number;
+  subtotal: number;
+  deliveryFee: number;
+  total: number;
 };
 
 export type AddressType = "Home" | "Work" | "Other";
 
 export type Address = {
   id: string;
+  userId: string;
   type: AddressType;
+  name: string;
+  phone: string;
+  line1: string;
+  line2: string | null;
+  city: string;
+  state: string;
+  pincode: string;
+  isDefault: boolean;
+};
+
+// Frozen address snapshot embedded in an Order — not a live Address FK, so it
+// has no id/userId/isDefault of its own.
+export type OrderAddress = {
+  type: string;
   name: string;
   phone: string;
   line1: string;
@@ -41,7 +73,6 @@ export type Address = {
   city: string;
   state: string;
   pincode: string;
-  isDefault?: boolean;
 };
 
 export type OrderStatus =
@@ -56,21 +87,32 @@ export type OrderItem = {
   productId: string;
   qty: number;
   priceAtPurchase: number;
+  product: CartProduct;
 };
 
 export type Order = {
   id: string;
   orderNumber: string;
+  userId: string;
   placedAt: string;
   status: OrderStatus;
   items: OrderItem[];
-  address: Address;
+  address: OrderAddress;
   deliverySlot: string;
-  paymentMethod: string;
+  paymentMethod: "upi" | "card" | "netbanking";
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
   subtotal: number;
   deliveryFee: number;
   discount: number;
   total: number;
+};
+
+export type User = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
 };
 
 export type SortOption =

@@ -4,11 +4,13 @@ import { HeroCarousel } from "@/components/home/hero-carousel";
 import { CategoryGrid } from "@/components/home/category-grid";
 import { PromoStrip } from "@/components/home/promo-strip";
 import { ProductCarousel } from "@/components/product/product-carousel";
-import { getFeaturedProducts, getNewArrivals } from "@/lib/queries";
+import { getFeaturedProducts, getNewArrivals } from "@/lib/api/catalog";
 
-export default function Home() {
-  const featured = getFeaturedProducts(10);
-  const newArrivals = getNewArrivals(10);
+export default async function Home() {
+  const [featured, newArrivals] = await Promise.all([
+    getFeaturedProducts(10),
+    getNewArrivals(10),
+  ]);
 
   return (
     <div className="mx-auto max-w-7xl space-y-10 px-4 py-6">
