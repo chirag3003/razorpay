@@ -1,4 +1,16 @@
-import { and, arrayContains, desc, asc, eq, gte, ilike, inArray, lte, sql } from "drizzle-orm";
+import {
+  and,
+  arrayContains,
+  desc,
+  asc,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  isNull,
+  lte,
+  sql,
+} from "drizzle-orm";
 import { db } from "../db";
 import { categories, products } from "../db/schema";
 import { NotFoundError } from "../errors";
@@ -23,7 +35,8 @@ const productWithCategory = {
 };
 
 export async function listProducts(filters: ProductQuery) {
-  const conditions = [];
+  // Archived products are never part of the storefront catalog.
+  const conditions = [isNull(products.archivedAt)];
 
   if (filters.category.length > 0) {
     conditions.push(inArray(categories.slug, filters.category));
@@ -89,7 +102,7 @@ export async function getProductBySlug(slug: string) {
     .select(productWithCategory)
     .from(products)
     .innerJoin(categories, eq(products.categoryId, categories.id))
-    .where(eq(products.slug, slug))
+    .where(and(eq(products.slug, slug), isNull(products.archivedAt)))
     .limit(1);
 
   if (!product) throw new NotFoundError("Product");
@@ -104,7 +117,11 @@ export async function getRelatedProducts(slug: string, limit = 5) {
     .from(products)
     .innerJoin(categories, eq(products.categoryId, categories.id))
     .where(
-      and(eq(categories.slug, product.categorySlug), sql`${products.id} != ${product.id}`)
+      and(
+        eq(categories.slug, product.categorySlug),
+        sql`${products.id} != ${product.id}`,
+        isNull(products.archivedAt)
+      )
     )
     .limit(limit);
 }
@@ -114,7 +131,7 @@ export async function getProductById(id: string) {
     .select(productWithCategory)
     .from(products)
     .innerJoin(categories, eq(products.categoryId, categories.id))
-    .where(eq(products.id, id))
+    .where(and(eq(products.id, id), isNull(products.archivedAt)))
     .limit(1);
 
   if (!product) throw new NotFoundError("Product");

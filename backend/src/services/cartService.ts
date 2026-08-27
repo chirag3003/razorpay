@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { cartItems, carts, products } from "../db/schema";
 import { EmptyCartError, NotFoundError } from "../errors";
@@ -39,7 +39,7 @@ export async function addItem(cartId: string, productId: string, qty: number) {
   const [product] = await db
     .select({ id: products.id })
     .from(products)
-    .where(eq(products.id, productId))
+    .where(and(eq(products.id, productId), isNull(products.archivedAt)))
     .limit(1);
 
   if (!product) throw new NotFoundError("Product");

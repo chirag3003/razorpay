@@ -17,3 +17,14 @@ export async function getCategoryBySlug(slug: string) {
   if (!category) throw new NotFoundError("Category");
   return category;
 }
+
+export async function getCategoryById(id: string) {
+  const [category] = await db
+    .select()
+    .from(categories)
+    .where(eq(categories.id, id))
+    .limit(1);
+
+  if (!category) throw new NotFoundError("Category");
+  return category;
+}

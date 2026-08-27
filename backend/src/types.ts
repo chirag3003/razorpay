@@ -5,3 +5,11 @@ export type AppEnv = {
     userId: string;
   };
 };
+
+// Separate context typing for the /api/admin routes — admin auth is its own token/middleware
+// (middleware/adminAuth.ts), never mixed with the human-session `userId` above.
+export type AdminEnv = {
+  Variables: {
+    admin: true;
+  };
+};

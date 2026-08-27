@@ -20,6 +20,12 @@ export class ConflictError extends DomainError {
   }
 }
 
+export class ForbiddenError extends DomainError {
+  constructor(message = "Forbidden") {
+    super(message, 403, "FORBIDDEN");
+  }
+}
+
 export class EmptyCartError extends DomainError {
   constructor() {
     super("Cart is empty", 400, "EMPTY_CART");

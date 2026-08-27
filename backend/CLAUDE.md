@@ -28,6 +28,9 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
   /services           All business logic. See "Service Layer Rules" below.
   /routes             REST API for the Next.js storefront + dashboard. Thin — validate via
                        /schemas, call one or more /services functions, return.
+    /admin            Store-operator endpoints (/api/admin/*): products, categories, orders,
+                       dashboard summary, read-only user list. index.ts mounts the sub-routers;
+                       every one except auth.ts applies requireAdmin.
   /agent-interfaces
     /a2a               Agent Card + task lifecycle (submitted→working→input-required→completed).
                        Primary interface. Task handlers validate via /schemas, call /services.
@@ -35,7 +38,10 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
   /webhooks           Razorpay webhook receiver — validates payload via /schemas, calls
                        recoveryService for payment.failed / subscription.charged events
   /middleware         verifyAgentToken.ts (token valid → scope/cap → Reserve Pay balance chain),
-                      auth.ts (normal human session auth for REST routes)
+                      auth.ts (normal human session auth for REST routes),
+                      adminAuth.ts (requireAdmin — the /api/admin token, see Conventions)
+  /utils              Small pure helpers with no app deps. slug.ts (slugify) — shared by the
+                      seed script and the admin product/category create endpoints.
   /llm                Every Claude API call in the backend lives here, nowhere else. See
                       "LLM Isolation" below.
   constants.ts        Regulatory/config numbers centralized — RESERVE_PAY_MAX_AMOUNT (₹10,000),
@@ -149,6 +155,14 @@ a written rule.
   deliberately the same "bearer token in `Authorization` header" shape the future `agent_tokens`
   system will use — swapping in agent auth later doesn't require a new auth primitive, just a
   second verification path alongside `middleware/auth.ts`.
+- **Admin auth is that second verification path, done for real.** `middleware/adminAuth.ts` +
+  `services/adminAuthService.ts`: `POST /api/admin/login` exchanges the shared `ADMIN_PASSWORD`
+  for a JWT signed with a *separate* secret (`ADMIN_JWT_SECRET`), payload `{ role: "admin" }`,
+  no `sub`, 12h TTL. `requireAdmin` verifies that secret and asserts `role === "admin"`; it
+  never sets `userId` and admin routes use `AdminEnv` (types.ts), not `AppEnv`. The two token
+  types can't be swapped: `userService.verifyToken` rejects a missing string `sub`,
+  `verifyAdminToken` rejects a missing `role`. Admin mutations still go route → service and
+  still write `auditService` rows (`actorType: "admin"`).
 
 ---
 
@@ -167,9 +181,9 @@ bun run db:seed      Seed categories/products (ported from web/data/*.ts) — sa
 ```
 
 **First-time setup:** fill in `.env` (copy `.env.example`, add real `RAZORPAY_KEY_ID` /
-`RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET` from the Razorpay dashboard — the server won't
-boot without them), then `bun run db:generate && bun run db:migrate && bun run db:seed`, then
-`bun run dev`. Day-to-day schema changes: edit `src/db/schema.ts`, then either `db:generate` +
+`RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET` from the Razorpay dashboard, plus
+`ADMIN_PASSWORD` and `ADMIN_JWT_SECRET` for the admin surface — the server won't boot without
+them), then `bun run db:generate && bun run db:migrate && bun run db:seed`, then `bun run dev`. Day-to-day schema changes: edit `src/db/schema.ts`, then either `db:generate` +
 `db:migrate` (keeps a migration history) or `db:push` (quicker, no history — fine for local
 iteration, not for anything already deployed).
 

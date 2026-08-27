@@ -1,7 +1,17 @@
-import { pgTable, uuid, text, jsonb, integer, timestamp } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  text,
+  jsonb,
+  integer,
+  timestamp,
+  check,
+} from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { users } from "./users";
 import { products } from "./products";
 import type { CheckoutSnapshot } from "./carts";
+import { ORDER_STATUSES } from "../../constants";
 
 // Immutable snapshot of the address at the time of the order — must survive the address
 // being edited or deleted later, so it's stored inline rather than as a live foreign key.
@@ -23,10 +33,19 @@ export const orders = pgTable("orders", {
   discount: integer("discount").notNull(),
   total: integer("total").notNull(),
   // Fulfillment status — always starts "placed"; an order row only exists once payment
-  // is confirmed, so there is no "pending payment" status to model here.
+  // is confirmed, so there is no "pending payment" status to model here. Constrained to
+  // ORDER_STATUSES via the CHECK below (and by the Zod enum on PATCH /api/admin/orders/:id/status).
   status: text("status").notNull().default("placed"),
   placedAt: timestamp("placed_at").notNull().defaultNow(),
-});
+}, (t) => [
+  check(
+    "orders_status_check",
+    sql`${t.status} in (${sql.join(
+      ORDER_STATUSES.map((s) => sql`${s}`),
+      sql`, `
+    )})`
+  ),
+]);
 
 export const orderItems = pgTable("order_items", {
   id: uuid("id").defaultRandom().primaryKey(),

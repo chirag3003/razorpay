@@ -1,0 +1,2 @@
+ALTER TABLE "products" ADD COLUMN "archived_at" timestamp;--> statement-breakpoint
+ALTER TABLE "orders" ADD CONSTRAINT "orders_status_check" CHECK ("status" in ('placed', 'shipped', 'delivered', 'cancelled'));

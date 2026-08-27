@@ -1,7 +1,7 @@
 import { db } from "../db";
 import { auditLog } from "../db/schema";
 
-type ActorType = "user" | "agent" | "system";
+type ActorType = "user" | "agent" | "system" | "admin";
 type Decision = "approved" | "rejected";
 type Outcome = "success" | "failed";
 

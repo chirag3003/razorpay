@@ -35,7 +35,7 @@ export async function initiateCheckout(userId: string, input: InitiateCheckoutIn
       pincode: address.pincode,
     },
     deliverySlot: input.deliverySlot,
-    paymentMethod: input.paymentMethod,
+    paymentMethod: input.paymentMethod ?? "razorpay",
     subtotal: cart.subtotal,
     deliveryFee: cart.deliveryFee,
     discount,
@@ -197,7 +197,9 @@ export async function cancelPendingCheckout(razorpayOrderId: string) {
   });
 }
 
-async function getOrderWithItems(orderId: string) {
+// Exported so adminOrderService can return the exact same order+items+product shape the
+// storefront order endpoints use, without duplicating the join.
+export async function getOrderWithItems(orderId: string) {
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
   if (!order) throw new NotFoundError("Order");
 

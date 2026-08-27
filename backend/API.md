@@ -6,7 +6,8 @@ here ever disagrees with the code, the code wins; but if you find a mismatch, fi
 same change.
 
 Out of scope / not built yet: agent tokens, mandates, Reserve Pay, A2A/MCP. Everything below is
-plain session-auth REST for a human storefront. See `backend/CLAUDE.md` if you're changing backend
+plain REST — session-auth for the human storefront (§2–§6.9), plus a password-gated admin
+surface for a merchant dashboard (§6.10). See `backend/CLAUDE.md` if you're changing backend
 code, not just calling it.
 
 ---
@@ -45,6 +46,13 @@ after expiry — log the user out on a `401` from any authenticated route).
 There is no concept of guest cart/checkout — the cart is server-side per logged-in user (see
 §6.4), so the frontend must gate cart/checkout UI behind login.
 
+**Admin auth is a completely separate mechanism** (see §6.10). The admin dashboard endpoints
+under `/api/admin/*` are gated by their own token: `POST /api/admin/login` takes a single
+shared password (`ADMIN_PASSWORD` in `backend/.env`) and returns an admin JWT signed with a
+different secret (`ADMIN_JWT_SECRET`), 12-hour expiry, payload `{ role: "admin" }` with **no
+`sub`**. A user token is never accepted on an `/api/admin` route and an admin token is never
+accepted on a storefront route — they are not interchangeable in either direction.
+
 ---
 
 ## 3. Response & error conventions
@@ -65,9 +73,10 @@ with one of these HTTP statuses:
 | 400  | `EMPTY_CART`                 | Checkout initiated with no items in cart |
 | 400  | `INVALID_ADDRESS`            | Address doesn't exist or doesn't belong to the caller (same code for both — don't leak which) |
 | 400  | `PAYMENT_VERIFICATION_FAILED`| Razorpay signature on `/checkout/verify` didn't match |
-| 401  | `UNAUTHORIZED`               | Missing/invalid/expired bearer token, or bad login credentials |
+| 401  | `UNAUTHORIZED`               | Missing/invalid/expired bearer token, bad login credentials, or wrong admin password |
+| 403  | `FORBIDDEN`                  | Reserved for admin-authorization failures — defined, not currently returned by any route |
 | 404  | `NOT_FOUND`                  | Category/product/address/order/cart-item doesn't exist (message says which, e.g. `"Product not found"`) |
-| 409  | `CONFLICT`                   | Signup with an email that's already registered |
+| 409  | `CONFLICT`                   | Signup with an already-registered email; admin create with a duplicate slug; admin delete of a category that still has products |
 | 502  | `PAYMENT_GATEWAY_ERROR`      | Razorpay itself rejected the order-create call (e.g. bad API keys) |
 
 **Request validation errors** (malformed body/query — wrong type, missing required field, failed
@@ -126,6 +135,8 @@ backend's).
   ratingCount: number;
   inStock: boolean;
   tags: string[];
+  archivedAt: string | null;  // storefront responses always null (archived rows are filtered
+                              // out); admin responses (§6.10) can be an ISO timestamp
 }
 ```
 
@@ -175,20 +186,29 @@ treat it as a known gap.
     line1: string; line2?: string; city: string; state: string; pincode: string;
   };
   deliverySlot: string;
-  paymentMethod: "upi" | "card" | "netbanking" | "cod";
+  paymentMethod: string;  // "razorpay" by default (the storefront no longer collects a method
+                          // up front — Razorpay Checkout does). May still be "upi" | "card" |
+                          // "netbanking" | "cod" if a caller passed one to /checkout/initiate.
   razorpayOrderId: string;
   razorpayPaymentId: string;
   subtotal: number;
   deliveryFee: number;
   discount: number;        // always 0 for now — no promo/coupon system yet
   total: number;
-  status: "placed";        // always "placed" today — no fulfillment-status transitions wired up yet
+  status: "placed" | "shipped" | "delivered" | "cancelled";  // starts "placed"; only an admin
+                                                             // (§6.10) can change it
   placedAt: string;         // ISO timestamp
   items: Array<{ productId: string; qty: number; priceAtPurchase: number; product: Product /* raw shape */ }>;
 }
 ```
 `priceAtPurchase` is the frozen per-unit price at order time — use this for order-history display,
 not the live `product.price` (which can have changed since).
+
+### AdminOrder (returned from the `/api/admin/orders*` endpoints — §6.10)
+The `Order` shape above **plus** the buyer (admins aren't scoped to one user):
+```ts
+Order & { buyer: { id: string; name: string; email: string; phone: string } }
+```
 
 ---
 
@@ -222,6 +242,21 @@ POST   /api/cart/checkout/verify         auth     verifies signature, creates th
 
 GET    /api/orders                       auth
 GET    /api/orders/:id                   auth
+
+POST   /api/admin/login                  public   password -> admin JWT
+GET    /api/admin/dashboard              admin    summary counts + recent orders
+GET    /api/admin/orders                 admin    filters + pagination
+GET    /api/admin/orders/:id             admin
+PATCH  /api/admin/orders/:id/status      admin    { status }
+GET    /api/admin/products               admin    no storefront in-stock/archived filtering
+POST   /api/admin/products               admin
+PATCH  /api/admin/products/:id           admin    partial; { archived } toggles archive
+DELETE /api/admin/products/:id           admin    hard-delete, or archive if order-referenced
+GET    /api/admin/categories             admin    includes productCount per category
+POST   /api/admin/categories             admin
+PATCH  /api/admin/categories/:id         admin    partial
+DELETE /api/admin/categories/:id         admin    409 if the category still has products
+GET    /api/admin/users                  admin    read-only, paginated
 ```
 
 ---
@@ -342,13 +377,15 @@ popup sit in between them:
 **Step 1 — `POST /api/cart/checkout/initiate`**
 Body:
 ```json
-{ "addressId": "<uuid, must belong to caller>", "deliverySlot": "Today, 4-6 PM", "paymentMethod": "upi" }
+{ "addressId": "<uuid, must belong to caller>", "deliverySlot": "Today, 4-6 PM" }
 ```
-`paymentMethod` is one of `"upi" | "card" | "netbanking" | "cod"` — **note this value is stored
-for display only; it does not change what Razorpay Checkout actually shows the user**, and `"cod"`
-still goes through the same Razorpay-order flow today (there is no separate pay-on-delivery path
-that skips Razorpay). If you want a true COD option that bypasses online payment, that's not built
-— flag it rather than assuming `"cod"` does that.
+`paymentMethod` is **optional** and defaults to `"razorpay"`. The storefront no longer collects a
+payment method up front — Razorpay Checkout asks the user which method to use. If a caller does
+send one it must be `"upi" | "card" | "netbanking" | "cod"`, and **it is stored for display only;
+it does not change what Razorpay Checkout actually shows the user**. `"cod"` still goes through
+the same Razorpay-order flow today (there is no separate pay-on-delivery path that skips
+Razorpay). If you want a true COD option that bypasses online payment, that's not built — flag it
+rather than assuming `"cod"` does that.
 
 Preconditions, checked server-side (don't need client-side duplication, but good for disabling
 the checkout button early): cart must be non-empty (`400 EMPTY_CART`), `addressId` must belong to
@@ -421,16 +458,133 @@ Both require auth and are scoped to the caller.
 - `GET /api/orders/:id` → `200 { "order": Order }`. `404` if it doesn't exist **or** belongs to
   someone else (same non-distinguishing behavior as addresses).
 
+### 6.10 Admin
+
+Store-operator endpoints for a merchant dashboard. **Separate auth from everything above** (see
+§2): get a token from `POST /api/admin/login`, then send `Authorization: Bearer <admin token>`
+on every other `/api/admin/*` call. A missing/invalid/expired admin token → `401 UNAUTHORIZED`.
+There is one shared admin identity — no per-admin accounts, no roles. Every mutating call writes
+an `audit_log` row (`actor_type = "admin"`).
+
+#### 6.10.1 `POST /api/admin/login`
+Public. Request `{ "password": "..." }` (checked against `ADMIN_PASSWORD`).
+`200 { "token": "eyJ..." }` — the admin JWT, valid 12h. `401 UNAUTHORIZED` on a wrong password.
+
+#### 6.10.2 `GET /api/admin/dashboard`
+`200`:
+```json
+{
+  "orders":  { "total": 128, "byStatus": { "placed": 12, "shipped": 40, "delivered": 74, "cancelled": 2 } },
+  "revenue": { "allTime": 348200, "last30Days": 91400 },
+  "catalog": { "products": 60, "archived": 3, "categories": 8, "outOfStock": 4 },
+  "users":   { "total": 51 },
+  "recentOrders": [ /* AdminOrder[], up to 10, newest first */ ]
+}
+```
+`revenue` sums `order.total` (whole rupees) over every order whose status isn't `"cancelled"`;
+`last30Days` further restricts to `placedAt` within the last 30 days. `catalog.products` counts
+non-archived products only; `catalog.archived` is the archived count.
+
+#### 6.10.3 `GET /api/admin/orders`
+All query params optional:
+
+| param      | type                                                    | default   |
+|------------|--------------------------------------------------------|-----------|
+| `status`   | `placed` \| `shipped` \| `delivered` \| `cancelled`     | (all)     |
+| `userId`   | uuid — orders for one buyer                              | (all)     |
+| `dateFrom` | ISO-8601 datetime — `placedAt >=`                        | (none)    |
+| `dateTo`   | ISO-8601 datetime — `placedAt <=`                        | (none)    |
+| `q`        | substring match on `orderNumber` (case-insensitive)     | ""        |
+| `sort`     | `newest` \| `oldest` \| `total-desc` \| `total-asc`      | `newest`  |
+| `page`     | positive integer                                         | 1         |
+| `pageSize` | positive integer, max 100                                | 20        |
+
+`200 { "items": AdminOrder[], "total": number, "page": number, "pageSize": number }` — same
+`{ items, total, page, pageSize }` envelope as `GET /api/products`.
+
+#### 6.10.4 `GET /api/admin/orders/:id`
+`200 { "order": AdminOrder }`. `404 NOT_FOUND` if the id is unknown (no ownership scoping — an
+admin sees every order).
+
+#### 6.10.5 `PATCH /api/admin/orders/:id/status`
+Body `{ "status": "shipped" }` — must be one of the four values. `200 { "order": AdminOrder }`.
+`404` if the id is unknown; a value outside the set is a `400` validation error (§3). No
+transition rules — any status can move to any other (including back to `"placed"`).
+
+#### 6.10.6 `GET /api/admin/products`
+The admin catalog view — unlike `GET /api/products` it does **no** implicit in-stock or archived
+filtering. Query params (all optional): `q` (name substring), `category` (single slug),
+`archived` = `exclude` (default) \| `only` \| `all`, `inStock` = `"true"` \| `"false"`,
+`sort` = `newest` (default) \| `name-asc` \| `price-asc` \| `price-desc`, `page` (1),
+`pageSize` (max 100, default 20). `200 { "items": Product[], "total", "page", "pageSize" }` —
+`Product` including `archivedAt` (§4).
+
+#### 6.10.7 `POST /api/admin/products`
+Body:
+```json
+{
+  "name": "Cold Pressed Olive Oil",
+  "categorySlug": "staples-grains",
+  "price": 499,
+  "mrp": 560,
+  "unit": "500 ml",
+  "image": "https://.../olive-oil.jpg",
+  "images": ["https://.../olive-oil.jpg", "https://.../olive-oil-2.jpg"],
+  "description": "First cold press, single origin.",
+  "inStock": true,
+  "tags": ["new"]
+}
+```
+`images` (defaults to `[image]`), `inStock` (defaults `true`) and `tags` (defaults `[]`) are
+optional. `slug` is generated from `name` (with a `-2`, `-3`… suffix on collision) — not client
+-supplied. `rating`/`ratingCount` start at 0. `201 { "product": Product }`. `404 NOT_FOUND` if
+`categorySlug` doesn't match a category.
+
+#### 6.10.8 `PATCH /api/admin/products/:id`
+Body is any non-empty subset of the create fields, **plus** `"archived": boolean` —
+`true` stamps `archivedAt` (product disappears from the storefront and from add-to-cart, stays
+visible here and in past orders), `false` clears it. `200 { "product": Product }`. `404` if the
+id — or a supplied `categorySlug` — is unknown.
+
+#### 6.10.9 `DELETE /api/admin/products/:id`
+Tries a hard delete. If no order references the product → `204`, empty body. If a past order
+does (the line item must survive) → the product is **archived instead** and the response is
+`200 { "product": Product, "archived": true }`. `404` if the id is unknown.
+
+#### 6.10.10 `GET /api/admin/categories`
+`200 { "categories": Array<Category & { productCount: number }> }`, alphabetical by name.
+`productCount` counts all products in the category (archived included).
+
+#### 6.10.11 `POST /api/admin/categories`
+Body `{ "name", "description", "icon", "image", "slug"? }` — `icon` is a Lucide icon name
+(e.g. `"Carrot"`), `slug` is derived from `name` if omitted. `201 { "category": Category }`.
+`409 CONFLICT` if the slug is already taken.
+
+#### 6.10.12 `PATCH /api/admin/categories/:id`
+Any non-empty subset of `{ name, description, icon, image, slug }`. `200 { "category": Category }`.
+`404` if unknown; `409 CONFLICT` if `slug` collides with another category.
+
+#### 6.10.13 `DELETE /api/admin/categories/:id`
+`204` on success. `409 CONFLICT` if any product still references the category (reassign or delete
+those products first — categories are hard-delete only, no archive). `404` if unknown.
+
+#### 6.10.14 `GET /api/admin/users`
+Read-only. Query: `q` (substring on name or email), `page` (1), `pageSize` (max 100, default 50).
+`200 { "items": Array<{ id, name, email, phone, createdAt }>, "total", "page", "pageSize" }`.
+`passwordHash` is never included. No create/update/delete for users.
+
 ---
 
 ## 7. Things intentionally not built (don't assume these exist)
 
 - No password reset / email verification / OAuth — signup+login only.
-- No order status transitions (no "mark delivered", no tracking) — `status` is always `"placed"`.
 - No coupons/discounts — `discount` is always `0`.
 - No multi-address "ship to" selection beyond picking one saved address at checkout time.
 - No server-enforced single default address (see §6.6 note).
 - No true cash-on-delivery bypass of Razorpay (see §6.8 note on `paymentMethod: "cod"`).
-- No admin/merchant-facing endpoints of any kind.
+- **Admin surface (§6.10) is intentionally minimal:** one shared password, no per-admin
+  accounts or roles/RBAC, no order-status transition rules, no editing/deleting users, no
+  audit-log read endpoint, no CSV/export, no login rate-limiting. Customer-facing order
+  tracking is still not exposed (`status` changes are admin-only and not surfaced to the buyer).
 - No agent/AI checkout path — that's the deliberately-deferred next phase; see
   `backend/CLAUDE.md` for how the service layer is shaped to make that additive later.

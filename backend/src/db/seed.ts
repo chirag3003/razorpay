@@ -3,14 +3,7 @@
 // Not a shared import: the two apps stay independent, this is just a copy at seed time.
 import { db } from "./index";
 import { categories, products } from "./schema";
-
-function slugify(value: string) {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-}
+import { slugify } from "../utils/slug";
 
 const categoriesData = [
   {

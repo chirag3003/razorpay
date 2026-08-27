@@ -3,7 +3,7 @@ import { z } from "zod";
 export const initiateCheckoutSchema = z.object({
   addressId: z.uuid(),
   deliverySlot: z.string().min(1, "Select a delivery slot"),
-  paymentMethod: z.enum(["upi", "card", "netbanking", "cod"]),
+  paymentMethod: z.enum(["upi", "card", "netbanking", "cod"]).optional(),
 });
 
 export type InitiateCheckoutInput = z.infer<typeof initiateCheckoutSchema>;
