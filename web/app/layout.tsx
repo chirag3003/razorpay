@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,13 @@ export const metadata: Metadata = {
   title: "FreshCart — Groceries delivered to your door",
   description:
     "Order fresh fruits, vegetables, dairy, and everyday essentials online with fast delivery.",
+};
+
+// `resizes-content` shrinks the layout viewport when the on-screen keyboard
+// opens, which keeps the chat composer above it on Android. iOS Safari ignores
+// this and is handled by useKeyboardInset instead.
+export const viewport: Viewport = {
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
