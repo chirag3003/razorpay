@@ -7,6 +7,7 @@ import * as auditService from "./auditService";
 import * as cartService from "./cartService";
 import * as paymentService from "./paymentService";
 import type { InitiateCheckoutInput } from "../schemas/checkout.schema";
+import { pgErrorCode, PG_UNIQUE_VIOLATION } from "../utils/db-error";
 
 function generateOrderNumber() {
   const timestamp = Date.now().toString(36).toUpperCase();
@@ -122,7 +123,7 @@ export async function confirmPayment(razorpayOrderId: string, razorpayPaymentId:
   } catch (err) {
     // Unique violation on orders.razorpay_order_id — the webhook and /verify raced each
     // other and the other one won. Idempotent no-op: return what it created.
-    if ((err as { code?: string }).code === "23505") {
+    if (pgErrorCode(err) === PG_UNIQUE_VIOLATION) {
       const [raced] = await db
         .select()
         .from(orders)

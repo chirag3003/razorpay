@@ -145,6 +145,13 @@ a written rule.
   handlers thin per the Service Layer Rules above.
 - **Drizzle**, not Prisma/TypeORM — schema stays plain TypeScript, no generate-step lag, easy
   raw-SQL escape hatch for complex balance queries.
+- **Never read a Postgres error code off `err.code`** — use `pgErrorCode(err)` from
+  `/utils/db-error.ts` (with the `PG_UNIQUE_VIOLATION` / `PG_FOREIGN_KEY_VIOLATION` constants).
+  drizzle-orm v1 wraps driver errors in a `DrizzleQueryError` and hangs pg's `DatabaseError`
+  (the object carrying `code`) off `.cause`, so `err.code` is always `undefined`. This fails
+  silently: the `catch` branch simply never matches and a handled constraint violation escapes
+  as a 500. It had already broken the archive-instead-of-delete fallback, the "category still
+  has products" 409, and the webhook/verify checkout idempotency guard.
 - **Zod schemas are the single source of truth** for both runtime validation and (via
   zod-to-json-schema or similar) the parameter schemas exposed to agents through A2A/MCP tool
   definitions. Don't hand-write a separate JSON schema for a tool that already has a Zod schema.

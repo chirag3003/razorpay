@@ -5,6 +5,11 @@ import { ConflictError, NotFoundError } from "../errors";
 import * as auditService from "./auditService";
 import * as categoryService from "./categoryService";
 import { slugify } from "../utils/slug";
+import {
+  pgErrorCode,
+  PG_UNIQUE_VIOLATION,
+  PG_FOREIGN_KEY_VIOLATION,
+} from "../utils/db-error";
 import type {
   CreateCategoryInput,
   UpdateCategoryInput,
@@ -55,7 +60,7 @@ export async function create(input: CreateCategoryInput) {
       })
       .returning();
   } catch (err) {
-    if ((err as { code?: string }).code === "23505") {
+    if (pgErrorCode(err) === PG_UNIQUE_VIOLATION) {
       throw new ConflictError("A category with this slug already exists");
     }
     throw err;
@@ -114,7 +119,7 @@ export async function remove(id: string) {
   try {
     await db.delete(categories).where(eq(categories.id, id));
   } catch (err) {
-    if ((err as { code?: string }).code === "23503") {
+    if (pgErrorCode(err) === PG_FOREIGN_KEY_VIOLATION) {
       throw new ConflictError(
         "Category still has products — reassign or delete them first"
       );
