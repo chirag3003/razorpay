@@ -703,6 +703,114 @@ polling.
 
 ---
 
+### 6.12 Agent tool layer (not HTTP)
+
+**This is not a REST surface.** It's an in-process TypeScript registry at
+`src/agent-interfaces/tools/`, imported and called directly by the AI layer. It is documented here
+because it is the contract the chat agent codes against, and because the A2A and MCP adapters will
+expose exactly these tools when they land.
+
+**Why it exists.** The REST endpoints above assume a browser holding a session JWT and return
+shapes a React page renders — a single catalog page is ~2,200 tokens, most of it placeholder image
+URLs and one boilerplate description repeated across all 58 products. Agents need the same
+*actions* with model-shaped inputs, compact outputs, and failures they can recover from.
+
+### Calling it
+
+```ts
+import { runTool, toAnthropicTools } from "./agent-interfaces/tools/registry";
+
+const ctx = {
+  actor: { type: "agent", id: "<agent or token id>" },  // who is acting — audit rows use this
+  userId: "<uuid>",                                     // whose data
+  conversationId: "<optional, for audit correlation>",
+};
+
+const result = await runTool(ctx, "search_products", { q: "milk" });
+```
+
+**Authentication happens above this layer.** The caller resolves the session and passes `userId`;
+tools trust it exactly as a route handler trusts `c.get("userId")` after `requireAuth`. Agent
+tokens with scopes and spend caps are the next phase and slot into `ctx.actor` without changing
+any tool.
+
+`toAnthropicTools()` returns `{name, description, input_schema}` generated from each tool's Zod
+schema via zod-4's `z.toJSONSchema`; `toMcpTools()` returns the same with `inputSchema`.
+
+### `runTool` never throws
+
+Every call returns a discriminated result, because a model can't catch an exception:
+
+```ts
+{ ok: true,  data: { ... } }
+{ ok: false, error: { code, message, retryable, hint? } }
+```
+
+`hint` is the important field — it tells the model what to do next, which is what turns a failure
+into a recovery rather than a stall. Codes: `invalid_input`, `not_found`, `cart_empty`,
+`product_unavailable`, `invalid_address`, `invalid_slot`, `mandate_missing`, `mandate_expired`,
+`mandate_revoked`, `reserve_insufficient`, `amount_exceeds_mandate_limit`, `quote_expired`,
+`quote_superseded`, `cart_changed`, `payment_declined`, `payment_gateway_unavailable`, `conflict`,
+`server`. They're named to map mechanically onto `ChatErrorCode` in `web/lib/chat/protocol.ts`.
+
+### The tools
+
+| Tool | Writes | Notes |
+|---|---|---|
+| `search_products` | | Matches names and tags, **not** descriptions. `category` is OR, `tag` is AND. |
+| `get_product` | | Accepts a slug or an id. |
+| `list_categories` | | The fallback for vague requests — pick a category instead of guessing keywords. |
+| `list_related_products` | | Same-category, unranked. |
+| `get_cart` | | |
+| `add_to_cart` | ● | Quantity is **additive**. Rejects out-of-stock; caps a line at 20. |
+| `update_cart_item` | ● | Absolute quantity, minimum 1. |
+| `remove_from_cart` / `clear_cart` | ● | |
+| `list_addresses` / `create_address` | ● | |
+| `list_delivery_slots` | | `prepare_order` accepts only these ids. |
+| `get_payment_status` | | `none` / `active` / `expired` / `revoked` / `insufficient`, plus the shortfall. Falls back to local ledger state if the provider is unreachable, flagged as `stale`. |
+| `start_reserve_pay_setup` | ● | Returns the UPI intent link the customer must approve. |
+| `check_reserve_pay_status` | | Always contacts the provider — this is the polling tool. |
+| `prepare_order` | ● | Issues a signed quote. Takes no money. |
+| `place_order` | ● | Charges. Idempotent on `quoteId`. |
+| `list_orders` / `get_order` | | **Read-only.** Agents cannot cancel, refund, or change an order's status. |
+
+Outputs mirror `web/lib/chat/protocol.ts` (`ChatProduct`, `ChatCartLine`, `ChatAddress`,
+`ChatSlot`, `ChatMandate`) so the AI layer can pass them nearly straight into a message part.
+**All money is integer rupees**, including the mandate figures, which are converted from the paise
+the Reserve Pay tables store.
+
+### Ordering is two-phase
+
+```
+prepare_order({addressId, slotId})  ->  quote { quoteId, lines, totals, payment, expiresAt }
+        (show the customer, get an explicit yes)
+place_order({quoteId})              ->  { order, alreadyPlaced }
+```
+
+`prepare_order` writes a **Cart Mandate** — a signed, per-transaction record of exactly what was
+agreed (`cart_mandates` table), distinct from the Reserve Pay mandate's standing authority. It
+buys three things:
+
+- **Idempotency.** A consumed quote records the order it produced, so a retried `place_order`
+  returns that order (`alreadyPlaced: true`) instead of buying the cart twice.
+- **Invalidation.** The quote carries a fingerprint of the cart. Change the cart afterwards and
+  `place_order` fails with `cart_changed` rather than charging a basket nobody approved.
+- **Tamper evidence.** The record is HMAC-signed; a modified row fails its integrity check.
+
+Only one quote is open per customer at a time — calling `prepare_order` again supersedes the
+previous one. Quotes expire after 15 minutes.
+
+**Known limitation:** `place_order` delegates to `orderService.checkoutWithReservePay`, which
+re-derives its snapshot from the live cart at charge time. The fingerprint check runs immediately
+before the charge, so the window is sub-millisecond and same-customer-only, but a cart mutated
+inside it would be charged at its new total. Any divergence is recorded in the audit row
+(`quotedTotal` vs `chargedTotal`).
+
+**Reserve Pay is blocked on account activation** (see §6.11), so `start_reserve_pay_setup` and
+`place_order` return `payment_gateway_unavailable` today. Everything else works.
+
+---
+
 ## 7. Things intentionally not built (don't assume these exist)
 
 - No password reset / email verification / OAuth — signup+login only.
@@ -714,13 +822,15 @@ polling.
   accounts or roles/RBAC, no order-status transition rules, no editing/deleting users, no
   audit-log read endpoint, no CSV/export, no login rate-limiting. Customer-facing order
   tracking is still not exposed (`status` changes are admin-only and not surfaced to the buyer).
-- No agent/AI checkout path yet. The *payment rail* for it exists (UPI Reserve Pay, §6.11) but
-  nothing conversational calls it — there is no chat endpoint, no agent token, and no A2A/MCP
-  interface. `POST /api/cart/checkout/reserve-pay` is today driven by an ordinary logged-in
-  session, not by an agent.
-- No Cart Mandate. `backend/CLAUDE.md` describes a signed per-transaction
-  `{cart_contents, total_amount, token_id, timestamp}` record; it binds a purchase to an
-  *agent's* authority and is deferred with the rest of the agent-token work.
+- No chat endpoint and no LLM. The agent **tool layer** exists (§6.12) but nothing calls it yet —
+  there is no `/api/chat`, no Claude API client, and no A2A or MCP transport.
+- No agent tokens. `ToolContext.actor` is shaped for them, but there is no `agent_tokens` table,
+  no scope or spend-cap enforcement, and no `verifyAgentToken` middleware. Whoever calls the tool
+  layer is trusted to have authenticated the user.
+- Agents cannot modify orders. No cancel, no refund, no status change — §6.12's order tools are
+  read-only, and there is no refund code anywhere in the backend.
+- No stock quantities. `products.inStock` is a boolean; nothing decrements on purchase, so
+  "only 3 left" is not expressible and overselling is not prevented.
 - **Reserve Pay is blocked on account activation.** See the note at the top of §6.11 — the code
   is complete but `/v1/payments/create/json` is not enabled on the test account, so no mandate
   can be authorised yet.

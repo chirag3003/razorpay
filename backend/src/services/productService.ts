@@ -5,7 +5,6 @@ import {
   asc,
   eq,
   gte,
-  ilike,
   inArray,
   isNull,
   lte,
@@ -14,6 +13,7 @@ import {
 import { db } from "../db";
 import { categories, products } from "../db/schema";
 import { NotFoundError } from "../errors";
+import { buildProductSearchCondition } from "./productSearch";
 import type { ProductQuery } from "../schemas/product-query.schema";
 
 // Returned shape mirrors the frontend's Product type (categorySlug, not a raw categoryId FK).
@@ -42,7 +42,10 @@ export async function listProducts(filters: ProductQuery) {
     conditions.push(inArray(categories.slug, filters.category));
   }
   if (filters.q) {
-    conditions.push(ilike(products.name, `%${filters.q}%`));
+    // Matching strategy lives in productSearch.ts — one swap point for both the storefront and
+    // the agent tools, so the two can never diverge on what "search" means.
+    const search = buildProductSearchCondition(filters.q);
+    if (search) conditions.push(search);
   }
   if (filters.tag.length > 0) {
     conditions.push(arrayContains(products.tags, filters.tag));

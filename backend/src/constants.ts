@@ -24,6 +24,61 @@ export const ORDER_STATUSES = [
 
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
+// Delivery slots. Mirrors web/components/checkout/delivery-slot-picker.tsx exactly — same ids,
+// same day/time strings — because orders.delivery_slot stores the human LABEL, not the id, and
+// an agent-placed order has to be indistinguishable from a web-placed one in the admin views.
+//
+// The REST checkout schema deliberately stays `z.string().min(1)`: the storefront posts a label,
+// so turning that field into an enum of ids would break it. The constraint applies at the agent
+// tool boundary instead, where the caller is untrusted and free text would otherwise let an LLM
+// write "asap" into an order a human then has to fulfil.
+export const DELIVERY_SLOTS = [
+  { id: "today-2-4", day: "Today", time: "2:00 PM - 4:00 PM" },
+  { id: "today-4-6", day: "Today", time: "4:00 PM - 6:00 PM" },
+  { id: "today-6-8", day: "Today", time: "6:00 PM - 8:00 PM" },
+  { id: "tomorrow-10-12", day: "Tomorrow", time: "10:00 AM - 12:00 PM" },
+  { id: "tomorrow-12-2", day: "Tomorrow", time: "12:00 PM - 2:00 PM" },
+  { id: "tomorrow-2-4", day: "Tomorrow", time: "2:00 PM - 4:00 PM" },
+] as const;
+
+export type DeliverySlot = (typeof DELIVERY_SLOTS)[number];
+export type DeliverySlotId = DeliverySlot["id"];
+
+export function getDeliverySlot(slotId: string): DeliverySlot | undefined {
+  return DELIVERY_SLOTS.find((slot) => slot.id === slotId);
+}
+
+/** The exact string the storefront checkout writes: `${day}, ${time}`. */
+export function deliverySlotLabel(slotId: string): string | undefined {
+  const slot = getDeliverySlot(slotId);
+  return slot ? `${slot.day}, ${slot.time}` : undefined;
+}
+
+// Per-line cart ceiling. cartService.addItem has no quantity validation of its own — the only
+// guard today is the REST route's Zod schema, which agent callers never pass through — and its
+// quantity is additive, so an LLM looping add_to_cart could otherwise run a line to any number.
+export const MAX_CART_ITEM_QTY = 20;
+
+// Cart Mandate (the signed order quote handed to an agent by prepare_order). Short-lived on
+// purpose: it freezes a price, and the longer it lives the more likely the cart behind it has
+// moved on.
+export const CART_MANDATE_TTL_MINUTES = 15;
+
+// Quote lifecycle.
+//   open        awaiting place_order
+//   consumed    an order was created from it; carries the orderId, which is what makes
+//               place_order idempotent rather than double-charging on an LLM retry
+//   superseded  a newer quote replaced it, or the cart changed underneath it
+//   expired     passed its TTL unused
+export const CART_MANDATE_STATUSES = [
+  "open",
+  "consumed",
+  "superseded",
+  "expired",
+] as const;
+
+export type CartMandateStatus = (typeof CART_MANDATE_STATUSES)[number];
+
 // Reserve Pay (UPI SBMD). Both are hard regulatory ceilings, not preferences — Razorpay
 // rejects an authorisation order that exceeds either. Amount is in rupees to match the rest
 // of this file; the paise conversion happens at the paymentService boundary.
