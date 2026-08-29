@@ -167,6 +167,9 @@ export function toAgentOrder(
     status: order.status,
     placedAt: order.placedAt,
     deliverySlot: order.deliverySlot,
+    // The Razorpay payment id. Surfaced because the chat order-confirmation widget shows it —
+    // it is the reference a customer quotes when something goes wrong.
+    paymentId: order.razorpayPaymentId,
     addressOneLine: [
       order.address.line1,
       order.address.line2,

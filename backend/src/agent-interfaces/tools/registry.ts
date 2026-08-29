@@ -54,6 +54,30 @@ export function toAnthropicTools() {
   });
 }
 
+/**
+ * Same schemas, shaped for OpenRouter / any OpenAI-compatible chat-completions API.
+ *
+ * The `filter` is what implements the storefront chat agent's hard gate on `place_order`: the
+ * orchestrator omits that tool from the request body entirely on any turn the customer has not
+ * explicitly confirmed. A tool that is not in the array cannot be called — no amount of prompt
+ * injection or model error gets around an absent function, which is a stronger claim than a
+ * sentence in a system prompt.
+ */
+export function toOpenAITools(filter?: (tool: ToolDefinition<z.ZodType>) => boolean) {
+  return ALL_TOOLS.filter(filter ?? (() => true)).map((tool) => {
+    const parameters = z.toJSONSchema(tool.input, { io: "input" }) as Record<string, unknown>;
+    delete parameters.$schema;
+    return {
+      type: "function" as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters,
+      },
+    };
+  });
+}
+
 /** Same schemas, shaped for an MCP server's `tools/list`. */
 export function toMcpTools() {
   return toAnthropicTools().map(({ name, description, input_schema }) => ({

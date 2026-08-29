@@ -6,6 +6,7 @@
       "name": "backend",
       "dependencies": {
         "@hono/zod-validator": "^0.9.0",
+        "@openrouter/sdk": "^1.2.83",
         "dotenv": "^17.4.2",
         "drizzle-orm": "^1.0.0-rc.4",
         "hono": "^4.13.4",
@@ -82,6 +83,8 @@
     "@hono/zod-validator": ["@hono/zod-validator@0.9.0", "", { "peerDependencies": { "hono": ">=4.11.2", "zod": "^3.25.0 || ^4.0.0" } }, "sha512-n0ZSXmCiHVIp4Y5wlOOyZCeTd/rsawA/qW1cipB8QOYKZ9N8Tk0nZUZCXho9cu374AN4JpDNKioNKBJ/W+LBug=="],
 
     "@js-temporal/polyfill": ["@js-temporal/polyfill@0.5.1", "", { "dependencies": { "jsbi": "^4.3.0" } }, "sha512-hloP58zRVCRSpgDxmqCWJNlizAlUgJFqG2ypq79DCvyv9tHjRYMDOcPFjzfl/A1/YxDvRCZz8wvZvmapQnKwFQ=="],
+
+    "@openrouter/sdk": ["@openrouter/sdk@1.2.83", "", { "dependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-xgzL8gTElcAxalNGAJdkFf3ouRmLQQfeHL3KmmfY39MniUQC9z6uX/azKzADAoVM2Av56ujW6agbCcF+2lIZ9A=="],
 
     "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
 

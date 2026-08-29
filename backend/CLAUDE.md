@@ -42,8 +42,13 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
                       adminAuth.ts (requireAdmin — the /api/admin token, see Conventions)
   /utils              Small pure helpers with no app deps. slug.ts (slugify) — shared by the
                       seed script and the admin product/category create endpoints.
-  /llm                Every Claude API call in the backend lives here, nowhere else. See
-                      "LLM Isolation" below.
+  /chat               The storefront chat wire format and its projections. protocol.ts
+                      mirrors web/lib/chat/protocol.ts (server->client half only); partMapper.ts
+                      turns a tool result into a rendered widget; turnInput.ts turns a widget tap
+                      into text the model reads. No LLM calls — this layer is deterministic.
+  /llm                Every LLM API call in the backend lives here, nowhere else. See
+                      "LLM Isolation" below. Provider is OpenRouter (clients/openrouter.ts);
+                      OPENROUTER_MODEL is the whole provider swap.
   constants.ts        Regulatory/config numbers centralized — RESERVE_PAY_MAX_AMOUNT (₹10,000),
                       RESERVE_PAY_MAX_EXPIRY_DAYS (90), spend-cap defaults, etc. Never hardcode
                       these inline in a service or schema.
@@ -103,16 +108,28 @@ a separate checkout path that skips incremental validation.
 
 ## LLM Isolation
 
-Every Claude API call in the backend lives in `/llm`, and nowhere else. This makes "no LLM in the
+Every LLM API call in the backend lives in `/llm`, and nowhere else. This makes "no LLM in the
 merchant transaction core" (root CLAUDE.md Hard Rule #1) structurally checkable rather than just
 a written rule.
 - **Never allowed to import `/llm`:** `mandateService.ts`, `reservePayService.ts`,
   `paymentService.ts`, `verifyAgentToken.ts`, or anything in `/agent-interfaces` task handlers
   that touches cart/checkout/payment.
-- **Allowed to import `/llm`:** `growthService.ts` (upsell/cross-sell suggestion text —
+- **Allowed to import `/llm`:** `chatService.ts` (the storefront Growth Agent — the only such
+  caller that exists today), `growthService.ts` (upsell/cross-sell suggestion text —
   suggestions are advisory data only, never themselves mutate a cart), `recoveryService.ts`
   (failure *explanation*/messaging only — root-cause classification itself stays rule-based on
   decline codes), and the admin dashboard assistant.
+- **No LLM framework.** No LangChain, no LangGraph, no agent SDK. The loop is ~180 lines in
+  `llm/agentLoop.ts` and it stays that way deliberately: a framework that owns the loop, the
+  tools and the state turns "where does the model touch money" from an import-graph question
+  into an inspection question, and it fights the per-turn tool filtering that implements the
+  `place_order` gate. OpenRouter already provides the only abstraction we wanted — many models
+  behind one endpoint, swapped with `OPENROUTER_MODEL`.
+- **The chat agent's safety property is structural, not prompted.** `chatService` omits
+  `place_order` from the tool list unless the current turn is a `review.confirm` widget action on
+  a live quote. An absent function cannot be called by a confused model or by a prompt injection
+  hiding in a product name. If you add another money-moving tool, gate it the same way — do not
+  add a sentence to the system prompt and call it done.
 - If you're adding an ESLint import-boundary rule to enforce this at build time, it belongs here.
 
 ---

@@ -18,6 +18,18 @@ export const envSchema = z.object({
   ADMIN_JWT_SECRET: z
     .string()
     .min(16, "ADMIN_JWT_SECRET must be at least 16 characters"),
+
+  // Storefront chat agent. OpenRouter is the only LLM provider the backend talks to, and
+  // src/llm is the only place that talks to it (backend/CLAUDE.md, "LLM Isolation").
+  OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
+  // Any OpenRouter model slug. Swapping providers is this string and nothing else — which is
+  // the reason there is no LangChain-style provider abstraction in this codebase.
+  OPENROUTER_MODEL: z.string().default("anthropic/claude-sonnet-4.5"),
+  // Tried in order after the primary if it errors or is rate-limited. Empty disables fallback.
+  OPENROUTER_FALLBACK_MODEL: z.string().default("openai/gpt-4.1-mini"),
+  // Sent as HTTP-Referer/X-Title for OpenRouter attribution, and used to build the storefront
+  // hrefs that go into chat widgets (order confirmation links, "see all results").
+  PUBLIC_APP_URL: z.url().default("http://localhost:3000"),
 });
 
 export type Env = z.infer<typeof envSchema>;

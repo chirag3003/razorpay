@@ -7,3 +7,4 @@ export * from "./orders";
 export * from "./reserve-pay";
 export * from "./cart-mandates";
 export * from "./audit-log";
+export * from "./conversations";

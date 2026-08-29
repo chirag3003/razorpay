@@ -85,6 +85,25 @@ export type CartMandateStatus = (typeof CART_MANDATE_STATUSES)[number];
 export const RESERVE_PAY_MAX_AMOUNT = 10_000;
 export const RESERVE_PAY_MAX_EXPIRY_DAYS = 90;
 
+// Floor for a Reserve Pay block. Not a regulatory limit — blocking ₹20 is pointless friction:
+// the customer spends a UPI PIN approval to cover less than one order.
+export const RESERVE_PAY_MIN_AMOUNT = 500;
+
+/**
+ * A sensible block size for a given cart total, mirroring web/lib/chat/format.ts
+ * `suggestReserveAmount`. Roughly three orders' worth, rounded to ₹500, clamped to the legal
+ * range. Asking someone to block the ₹10,000 ceiling to buy ₹380 of tomatoes is how a checkout
+ * gets abandoned.
+ */
+export function suggestReserveAmounts(cartTotal: number): number[] {
+  const target = Math.ceil((cartTotal * 3) / 500) * 500;
+  const primary = Math.min(RESERVE_PAY_MAX_AMOUNT, Math.max(1_000, target));
+
+  return [...new Set([primary, primary * 2, RESERVE_PAY_MAX_AMOUNT])]
+    .filter((amount) => amount >= RESERVE_PAY_MIN_AMOUNT && amount <= RESERVE_PAY_MAX_AMOUNT)
+    .sort((a, b) => a - b);
+}
+
 // Default block lifetime. Deliberately short of the 90-day ceiling: expire_at is sent as an
 // absolute timestamp, and asking for exactly the maximum leaves no headroom for clock skew
 // between us and Razorpay.

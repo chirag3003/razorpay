@@ -175,6 +175,25 @@ export async function getCartMandate(userId: string, quoteId: string) {
   return mandate;
 }
 
+/**
+ * The user's one open quote, or null.
+ *
+ * Read-only and unlike getCartMandate it does not throw on absence, because both callers are
+ * asking a question rather than acting on an id: the chat orchestrator tells the model whether a
+ * quote is outstanding, and the confirm gate checks that the quote being confirmed is *this*
+ * user's live one. Expiry is not evaluated here — that stays in place_order, which is where the
+ * status transition belongs.
+ */
+export async function getOpenCartMandate(userId: string) {
+  const [mandate] = await db
+    .select()
+    .from(cartMandates)
+    .where(and(eq(cartMandates.userId, userId), eq(cartMandates.status, "open")))
+    .limit(1);
+
+  return mandate ?? null;
+}
+
 export async function markStatus(
   quoteId: string,
   status: "superseded" | "expired" | "consumed",

@@ -15,6 +15,7 @@ import {
 } from "../../schemas/agent-tool.schema";
 import {
   toAgentAddress,
+  toAgentCartLine,
   toAgentMandate,
   toAgentOrder,
   toAgentSlots,
@@ -49,6 +50,26 @@ async function mandateView(userId: string) {
   } catch (err) {
     console.error(`Reserve Pay sync failed for mandate ${live.id}; using local state:`, err);
     return { mandate: reservePayService.presentMandate(live), stale: true };
+  }
+}
+
+/**
+ * The customer's remaining reserved balance, read locally.
+ *
+ * Deliberately not `reservePayService.getMandate`, which round-trips to Razorpay: this runs
+ * immediately after a successful charge, where our own ledger is the fresher number (Razorpay's
+ * `amount_debited` is eventually consistent and can still report the pre-debit figure seconds
+ * later). Zero on failure rather than throwing — a bookkeeping read must never turn a completed
+ * order into an error.
+ */
+async function remainingAfterCharge(userId: string): Promise<number> {
+  try {
+    const live = await reservePayService.getLiveMandate(userId);
+    if (!live) return 0;
+    return toAgentMandate(reservePayService.presentMandate(live)).remaining;
+  } catch (err) {
+    console.error(`Could not read remaining balance for user ${userId}:`, err);
+    return 0;
   }
 }
 
@@ -217,7 +238,7 @@ const prepareOrder = defineTool({
     }
 
     // Ownership-checked; throws InvalidAddressError for an id belonging to somebody else.
-    await addressService.getAddressForUser(ctx.userId, input.addressId);
+    const address = await addressService.getAddressForUser(ctx.userId, input.addressId);
 
     const cartId = await cartService.getOrCreateActiveCartId(ctx.userId);
     const cart = await cartService.requireNonEmptyCart(cartId);
@@ -290,9 +311,16 @@ const prepareOrder = defineTool({
 
     return {
       ...mandateService.presentCartMandate(quote),
+      // The signed snapshot's lines carry only what the signature covers (productId/qty/price).
+      // These carry the display fields too, read from the same cart at the same instant, so the
+      // review the customer approves shows a unit and an image. Money still comes from the
+      // snapshot — these are the same numbers, from the same read.
+      lines: cart.items.map(toAgentCartLine),
+      address: toAgentAddress(address),
+      slot: { id: input.slotId, label: slotLabel },
       payment: {
         method: "reserve_pay" as const,
-        // tokenId: presented.tokenId,
+        tokenId: presented.tokenId,
         remaining: presented.remaining,
       },
     };
@@ -314,7 +342,12 @@ const placeOrder = defineTool({
     // that already exists instead of buying the cart twice.
     if (quote.status === "consumed" && quote.orderId) {
       const order = await orderService.getOrderById(ctx.userId, quote.orderId);
-      return { order: toAgentOrder(order), alreadyPlaced: true };
+      return {
+        order: toAgentOrder(order),
+        alreadyPlaced: true,
+        debited: order.total,
+        remainingAfter: await remainingAfterCharge(ctx.userId),
+      };
     }
 
     if (quote.status === "superseded") {
@@ -356,7 +389,15 @@ const placeOrder = defineTool({
       }))
     );
 
-    if (currentFingerprint !== quote.cartFingerprint) {
+    // Derived from the snapshot, NOT read from quote.cartFingerprint. The signature covers the
+    // snapshot (canonicalPayload) but not that column, so trusting the column would leave a
+    // tamper path: rewrite cart_fingerprint to the hash of a different basket, leave the
+    // snapshot alone, and both the signature check above and this comparison would pass while
+    // the customer is charged the quoted total for different goods. Recomputing here makes the
+    // fingerprint derived data and closes it.
+    const quotedFingerprint = mandateService.fingerprintLines(quote.snapshot.lines);
+
+    if (currentFingerprint !== quotedFingerprint) {
       await mandateService.markStatus(quote.id, "superseded");
       toolError("cart_changed", "The cart changed after this quote was created.", {
         retryable: true,
@@ -402,7 +443,12 @@ const placeOrder = defineTool({
       },
     });
 
-    return { order: toAgentOrder(order), alreadyPlaced: false };
+    return {
+      order: toAgentOrder(order),
+      alreadyPlaced: false,
+      debited: order.total,
+      remainingAfter: await remainingAfterCharge(ctx.userId),
+    };
   },
 });
 

@@ -251,6 +251,9 @@ GET    /api/reserve-pay/mandates/:id     auth     re-syncs from Razorpay; poll t
 POST   /api/reserve-pay/mandates/:id/revoke  auth stops further debits (local only)
 POST   /api/reserve-pay/mandates/debit   auth     test harness: debit without an order
 
+POST   /api/chat                         auth     SSE; the storefront chat agent
+GET    /api/chat/:conversationId         auth     rendered transcript, no model call
+
 POST   /api/admin/login                  public   password -> admin JWT
 GET    /api/admin/dashboard              admin    summary counts + recent orders
 GET    /api/admin/orders                 admin    filters + pagination
@@ -811,6 +814,151 @@ inside it would be charged at its new total. Any divergence is recorded in the a
 
 ---
 
+### 6.13 Storefront chat agent — `POST /api/chat`
+
+The first-party Growth Agent. An LLM over OpenRouter, calling **only** the tool layer in §6.12,
+streaming back the exact `ServerEvent` union the frontend already defines in
+`web/lib/chat/protocol.ts`.
+
+**Auth:** `Authorization: Bearer <user jwt>`, like every other route.
+**Response:** `text/event-stream`, one JSON `ServerEvent` per `data:` frame.
+
+#### Request
+
+```jsonc
+{
+  "conversationId": "uuid",       // client-generated; created server-side on first use
+  "token": "…",                   // accepted for wire compatibility, IGNORED (see below)
+  "turn": { "kind": "text", "text": "what milk do you have" },
+  "clientState": { "route": "/products", "recentActions": [] },
+  "protocolVersion": 1
+}
+```
+
+`turn` is one of:
+
+| kind | shape |
+|---|---|
+| `text` | `{ kind: "text", text }` |
+| `widget_action` | `{ kind: "widget_action", partId, action }` — `action` is the `WidgetAction` union |
+| `resume` | `{ kind: "resume" }` — replays the stored transcript, no model call, no tokens spent |
+
+`protocolVersion` must equal the server's `CHAT_PROTOCOL_VERSION` (currently `1`) or the request
+is rejected **before** the stream opens, with `400 PROTOCOL_VERSION_MISMATCH`. Bump it on both
+sides whenever a part's shape changes.
+
+#### Response frames
+
+```
+data: {"type":"message_start","messageId":"…"}
+data: {"type":"part_start","part":{"type":"text","partId":"text-1-ab3","text":"","done":false}}
+data: {"type":"text_delta","partId":"text-1-ab3","delta":"Here's what I "}
+data: {"type":"part_end","partId":"text-1-ab3"}
+data: {"type":"part_start","part":{"type":"product_results","partId":"products-2-9fk","products":[…]}}
+data: {"type":"part_end","partId":"products-2-9fk"}
+data: {"type":"message_end","messageId":"…"}
+```
+
+An unrecoverable failure arrives as a frame, never as a dead connection:
+`{"type":"error","code":"server","message":"…","retryable":true}`. The stream still closes with
+`message_end`.
+
+#### Widgets are projected, never authored by the model
+
+The model is not given "UI tools". When a tool returns, the server deterministically builds the
+widget from **that tool's own data** (`src/chat/partMapper.ts`):
+
+| Tool | Part |
+|---|---|
+| `search_products`, `list_related_products`, `get_product` | `product_results` (max 6) |
+| `list_categories` | `quick_replies` |
+| any cart tool | `cart_summary` |
+| `list_addresses`, `create_address` | `address_picker` |
+| `list_delivery_slots` | `slot_picker` |
+| `get_payment_status`, `check_reserve_pay_status` | `reserve_pay_status` |
+| `start_reserve_pay_setup` | `reserve_pay_setup` |
+| `prepare_order` | `order_review` |
+| `place_order` | `order_confirmation` |
+| `list_orders`, `get_order` | none — the model narrates |
+
+So **every rupee the customer sees came out of Postgres**, not out of a sampler. That is root
+`claude.md` Hard Rule #1 applied to the UI as well as to the debit.
+
+Multiple cart mutations in one turn collapse to a single trailing `cart_summary`. Other widgets
+stream out the moment their tool returns.
+
+Tool failures mostly do *not* produce an `error` part — `not_found`, `cart_empty` and
+`invalid_input` are things the model recovers from using the failure's `hint`, and a red box for
+"that slug doesn't exist" is noise. Only failures the **customer** must act on are rendered:
+`mandate_expired`, `mandate_revoked`, `reserve_insufficient`, `amount_exceeds_mandate_limit`,
+`payment_declined`, `payment_gateway_unavailable`.
+
+#### The hard gate on `place_order`
+
+**`place_order` is omitted from the tool list** on every turn except one where
+`turn.action.type === "review.confirm"` **and** the customer has a live, unexpired quote.
+
+It is not a rule in a system prompt — the function is absent from the JSON sent to the model. A
+prompt injection hidden in a product name, a hallucinated call, a retry storm: none can place an
+order, because there is nothing to call. A customer who types "yes, place it" is told to tap
+Confirm on the review card; that tap is the authorisation.
+
+#### `clientState` is not trusted
+
+`route` and `recentActions` are read as hints. Everything that could influence a purchase — cart,
+addresses, Reserve Pay balance, open quote — is rebuilt from the database each turn and injected
+as a server-truth context block. This also removes three tool round-trips from the start of
+almost every conversation.
+
+`recentActions` matters: the storefront batches cart taps made outside the chat panel and sends
+them with the next turn, which is how the agent knows not to re-add what the customer already
+added by hand.
+
+#### Conversations
+
+Stored in `conversations` + `chat_messages`. `chat_messages.content` holds the raw model message
+(including tool calls and results) so a conversation resumes verbatim; `chat_messages.parts` holds
+the rendered `MessagePart[]` that a `resume` turn replays. The conversation id is passed to every
+tool as `ToolContext.conversationId`, so an order's `audit_log` rows carry it — that is what links
+a placed order back to the conversation that placed it.
+
+`GET /api/chat/:conversationId` returns `{ conversationId, protocolVersion, messages: [{id, parts}] }`
+for rehydrating a panel without a model call.
+
+Aborting the request (closing the panel) propagates to the OpenRouter call, so tokens stop being
+billed immediately, and nothing from the partial turn is persisted.
+
+#### Model configuration
+
+`OPENROUTER_MODEL` is the entire provider swap — Claude, GPT, Llama, anything on OpenRouter.
+`OPENROUTER_FALLBACK_MODEL` is passed in the same request as a server-side failover, so a dead
+primary costs no extra round trip. There is no LangChain-style provider abstraction because
+OpenRouter already is one.
+
+#### What the frontend still has to do
+
+The backend is complete; `web/` has not been touched.
+
+1. **Implement `createSseTransport()`** in `web/lib/chat/transport.ts` and return it from
+   `getChatTransport()`. POST to `/api/chat` with the bearer token, read `text/event-stream`,
+   `JSON.parse` each `data:` frame, yield as `ServerEvent`. The store and every widget already
+   speak this — nothing else changes.
+2. **`ChatRequest.token` is vestigial.** Auth is the `Authorization` header. Keep sending the
+   field or drop it.
+3. **Re-read the cart when a `cart_summary` part arrives.** The agent now mutates the *server*
+   cart through `add_to_cart`, so the Zustand store must refresh. No protocol change needed —
+   `cart_summary` is already `live` lifecycle.
+4. **`buildClientState` should stop calling `mock-reserve-pay`** (`client-state.ts:44`). Cosmetic
+   only: the backend ignores `clientState.mandate` and uses server truth.
+5. **`web/lib/chat/mock-*.ts` (~870 lines) can be deleted** once the SSE transport lands.
+
+**Reserve Pay is still blocked on account activation** (§6.11), so `start_reserve_pay_setup` and
+the debit inside `place_order` return `payment_gateway_unavailable`. That surfaces as an `error`
+part with `code: "bank_not_available"`, which `web/components/chat/widgets/error-widget.tsx`
+already renders. Everything else in the chat flow works today.
+
+---
+
 ## 7. Things intentionally not built (don't assume these exist)
 
 - No password reset / email verification / OAuth — signup+login only.
@@ -822,8 +970,10 @@ inside it would be charged at its new total. Any divergence is recorded in the a
   accounts or roles/RBAC, no order-status transition rules, no editing/deleting users, no
   audit-log read endpoint, no CSV/export, no login rate-limiting. Customer-facing order
   tracking is still not exposed (`status` changes are admin-only and not surfaced to the buyer).
-- No chat endpoint and no LLM. The agent **tool layer** exists (§6.12) but nothing calls it yet —
-  there is no `/api/chat`, no Claude API client, and no A2A or MCP transport.
+- No A2A or MCP transport. The tool layer (§6.12) is shaped so both adapters wrap it unchanged,
+  but neither exists — the only caller today is the first-party chat agent (§6.13).
+- The chat agent has **no upsell tooling beyond `list_related_products`**, no conversation list
+  endpoint, no title editing, and no way to delete a conversation.
 - No agent tokens. `ToolContext.actor` is shaped for them, but there is no `agent_tokens` table,
   no scope or spend-cap enforcement, and no `verifyAgentToken` middleware. Whoever calls the tool
   layer is trusted to have authenticated the user.
