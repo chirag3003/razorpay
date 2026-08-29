@@ -895,13 +895,18 @@ Tool failures mostly do *not* produce an `error` part — `not_found`, `cart_emp
 
 #### The hard gate on `place_order`
 
-**`place_order` is omitted from the tool list** on every turn except one where
-`turn.action.type === "review.confirm"` **and** the customer has a live, unexpired quote.
+**`place_order` is never sent to the model at all** — not on any turn, confirmed or otherwise.
+On a `turn.action.type === "review.confirm"` widget action, `chatService` resolves the customer's
+one open quote itself and calls `place_order` directly, with no model round trip involved in the
+decision.
 
-It is not a rule in a system prompt — the function is absent from the JSON sent to the model. A
-prompt injection hidden in a product name, a hallucinated call, a retry storm: none can place an
-order, because there is nothing to call. A customer who types "yes, place it" is told to tap
-Confirm on the review card; that tap is the authorisation.
+It is not a rule in a system prompt, and it is not even a per-turn *unlock* of the function — the
+function is simply never in the JSON sent to the model. `review.confirm` carries no payload (no
+quoteId), so there was never a decision for a model to make: the widget action plus server state
+already determine the entire call. A prompt injection hidden in a product name, a hallucinated
+call, a retry storm: none can place an order, because there is nothing to call, ever. A customer
+who types "yes, place it" is told to tap Confirm on the review card; that tap goes straight to the
+tool, not through the model.
 
 #### `clientState` is not trusted
 

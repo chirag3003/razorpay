@@ -3,8 +3,8 @@ import type { ChatMessages } from "@openrouter/sdk/models";
 import { db } from "../db";
 import { chatMessages, conversations } from "../db/schema";
 import { NotFoundError } from "../errors";
-import { toOpenAITools } from "../agent-interfaces/tools/registry";
-import type { ToolContext } from "../agent-interfaces/tools/types";
+import { runTool, toOpenAITools } from "../agent-interfaces/tools/registry";
+import type { ToolContext, ToolResult } from "../agent-interfaces/tools/types";
 import { runAgentTurn } from "../llm/agentLoop";
 import { buildSystemPrompt } from "../llm/systemPrompt";
 import { buildTurnContext } from "../llm/turnContext";
@@ -12,7 +12,7 @@ import * as mandateService from "./mandateService";
 import { isCollapsible, nextPartId, toolResultToPart } from "../chat/partMapper";
 import { deriveTitle, turnToUserText } from "../chat/turnInput";
 import type { MessagePart, ServerEvent, TextPart } from "../chat/protocol";
-import type { ChatRequestInput } from "../schemas/chat.schema";
+import type { ChatRequestInput, ClientTurnInput } from "../schemas/chat.schema";
 
 /**
  * The storefront chat orchestrator — the Growth Agent.
@@ -139,33 +139,68 @@ async function persistTurn(conversationId: string, rows: PendingRow[], title: st
 }
 
 /* -------------------------------------------------------------------------- */
-/* the hard gate                                                              */
+/* the hard gate: place_order is executed directly, never handed to the model */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Decides whether the model gets `place_order` this turn. It does not, unless the customer has
- * just pressed Confirm on a live quote.
+ * `place_order` is never in the tool list the model sees, on any turn. Not "withheld unless
+ * confirmed" — simply never offered. `review.confirm` carries no payload (the frontend sends
+ * `{type: "review.confirm"}` with no quoteId) and the customer's one open quote is exactly the
+ * row `getOpenCartMandate` returns, so there is no decision left for a model to make: the action
+ * plus server state already determine the entire tool call. Routing that through a model round
+ * trip would buy nothing and risk something real — nothing forces the model to actually call the
+ * tool that round, and it can only reconstruct the quoteId (a UUID) by re-reading it out of
+ * earlier conversation text, a needless transcription risk on the highest-stakes call in the
+ * system. So `runChatTurn` calls this directly for a confirm turn, before the model loop ever
+ * starts, and `place_order` is filtered out of `toOpenAITools()` unconditionally below.
  *
- * This is the project's bounded-autonomy claim made structural. A prompt injection hidden in a
- * product name, a hallucinated tool call, a retry storm — none of them can place an order,
- * because the function is simply absent from the JSON sent to the model. A rule in a system
- * prompt is advice; an absent tool is arithmetic.
- *
- * The quoteId itself needs no extra check here: `place_order` loads the quote through
- * `mandateService.getCartMandate(userId, quoteId)`, which is ownership-scoped, and refuses any
- * status other than open (or consumed, which returns the existing order idempotently). So the
- * only quote a confirm turn can spend is this customer's live one.
+ * Every guard inside `place_order`'s own handler still runs exactly as before — ownership,
+ * idempotency, signature and fingerprint verification, the audit-log write — because this calls
+ * the same registry entry `runTool` would have called for the model. Only the *decision* to call
+ * it, and the sourcing of its argument, move from "the model, reading its own transcript" to
+ * "chatService, reading the database."
  */
-async function gateAllowsPlaceOrder(userId: string, request: ChatRequestInput) {
-  if (request.turn.kind !== "widget_action") return false;
-  if (request.turn.action.type !== "review.confirm") return false;
-
+async function handlePlaceOrderConfirm(
+  ctx: ToolContext,
+  userId: string,
+  turn: ClientTurnInput
+): Promise<{ userMessage: ChatMessages; assistantContent: string; parts: MessagePart[] }> {
   const openQuote = await mandateService.getOpenCartMandate(userId);
-  if (!openQuote) return false;
 
-  // An expired quote is not a live authorisation. place_order would reject it anyway; refusing
-  // to hand over the tool means the model never even tries, and re-prepares instead.
-  return openQuote.expiresAt.getTime() > Date.now();
+  const result: ToolResult = openQuote
+    ? await runTool(ctx, "place_order", { quoteId: openQuote.id })
+    : {
+        // No tool ran — there was nothing to call. Stale UI, a double tap after the quote was
+        // already consumed, or a quote that expired without being re-prepared. No audit row: no
+        // mandate was checked and no money moved, so there's nothing to log.
+        ok: false,
+        error: {
+          code: "quote_expired",
+          message: "That order review is no longer available.",
+          retryable: true,
+          hint: "Ask to review your order again.",
+        },
+      };
+
+  const part = toolResultToPart("place_order", { quoteId: openQuote?.id }, result);
+  const parts = part ? [part] : [];
+
+  return {
+    userMessage: { role: "user", content: turnToUserText(turn) },
+    // A short, fixed-format summary for the model's own memory in later turns — not model
+    // output, just enough that a future "what happened to my order?" has something coherent to
+    // read back. place_order's success shape is {order: {orderNumber, total, ...}, ...}.
+    assistantContent: result.ok
+      ? summarizePlacedOrder(result.data)
+      : `Could not place the order: ${result.error.message}`,
+    parts,
+  };
+}
+
+function summarizePlacedOrder(data: unknown): string {
+  const order = (data as { order?: { orderNumber?: string; total?: number } } | undefined)?.order;
+  if (!order?.orderNumber) return "Order placed.";
+  return `Order ${order.orderNumber} placed, total ₹${order.total}.`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -198,8 +233,50 @@ export async function* runChatTurn(input: {
     return;
   }
 
-  const allowPlaceOrder = await gateAllowsPlaceOrder(input.userId, request);
-  const tools = toOpenAITools((tool) => tool.name !== "place_order" || allowPlaceOrder);
+  const ctx: ToolContext = {
+    actor: { type: "user", id: input.userId },
+    userId: input.userId,
+    conversationId: conversation.id,
+  };
+
+  // Confirm: execute place_order directly, no model call. See handlePlaceOrderConfirm's doc
+  // comment for why this bypasses the loop entirely rather than merely unlocking the tool.
+  if (request.turn.kind === "widget_action" && request.turn.action.type === "review.confirm") {
+    const { userMessage, assistantContent, parts } = await handlePlaceOrderConfirm(
+      ctx,
+      input.userId,
+      request.turn
+    );
+
+    for (const part of parts) {
+      yield { type: "part_start", part };
+      yield { type: "part_end", partId: part.partId };
+    }
+
+    const rows: PendingRow[] = [
+      { role: "user", content: userMessage as unknown as Record<string, unknown> },
+      {
+        role: "assistant",
+        content: { role: "assistant", content: assistantContent } as unknown as Record<
+          string,
+          unknown
+        >,
+        parts,
+      },
+    ];
+
+    try {
+      await persistTurn(conversation.id, rows, null);
+    } catch (err) {
+      console.error(`Failed to persist chat turn for conversation ${conversation.id}:`, err);
+    }
+
+    yield { type: "message_end", messageId };
+    return;
+  }
+
+  // place_order is never in this list — see the comment on handlePlaceOrderConfirm above.
+  const tools = toOpenAITools((tool) => tool.name !== "place_order");
 
   const [history, context] = await Promise.all([
     loadHistory(conversation.id),
@@ -220,12 +297,6 @@ export async function* runChatTurn(input: {
     { role: "system", content: context },
     userMessage,
   ];
-
-  const ctx: ToolContext = {
-    actor: { type: "user", id: input.userId },
-    userId: input.userId,
-    conversationId: conversation.id,
-  };
 
   const rows: PendingRow[] = [
     { role: "user", content: userMessage as unknown as Record<string, unknown> },

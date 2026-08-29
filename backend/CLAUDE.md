@@ -125,11 +125,14 @@ a written rule.
   into an inspection question, and it fights the per-turn tool filtering that implements the
   `place_order` gate. OpenRouter already provides the only abstraction we wanted — many models
   behind one endpoint, swapped with `OPENROUTER_MODEL`.
-- **The chat agent's safety property is structural, not prompted.** `chatService` omits
-  `place_order` from the tool list unless the current turn is a `review.confirm` widget action on
-  a live quote. An absent function cannot be called by a confused model or by a prompt injection
-  hiding in a product name. If you add another money-moving tool, gate it the same way — do not
-  add a sentence to the system prompt and call it done.
+- **The chat agent's safety property is structural, not prompted.** `chatService` never puts
+  `place_order` in the tool list at all — not conditionally, never. On a `review.confirm` widget
+  action it resolves the customer's one open quote and calls the tool directly
+  (`chatService.handlePlaceOrderConfirm`), with no model round trip deciding whether or how to
+  call it. A confused model or a prompt injection hiding in a product name cannot place an order
+  because the function is never in its hands to begin with — there's no "unless" for it to defeat.
+  If you add another money-moving tool, gate it the same way — do not add a sentence to the
+  system prompt and call it done.
 - If you're adding an ESLint import-boundary rule to enforce this at build time, it belongs here.
 
 ---

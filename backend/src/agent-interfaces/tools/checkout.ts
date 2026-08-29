@@ -318,9 +318,11 @@ const prepareOrder = defineTool({
       lines: cart.items.map(toAgentCartLine),
       address: toAgentAddress(address),
       slot: { id: input.slotId, label: slotLabel },
+      // No tokenId here on purpose — nothing in web/components/chat/widgets renders it, it only
+      // existed to satisfy web/lib/chat/protocol.ts's OrderReviewPart.payment being `required`.
+      // See web/issues.md for the frontend-side follow-up.
       payment: {
         method: "reserve_pay" as const,
-        tokenId: presented.tokenId,
         remaining: presented.remaining,
       },
     };

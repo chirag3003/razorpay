@@ -16,7 +16,12 @@
  * should ever divide by 100.
  */
 
-export const CHAT_PROTOCOL_VERSION = 1;
+// Bumped from 1 -> 2: OrderReviewPart.payment dropped `tokenId` (never rendered by any widget —
+// see web/issues.md). The frozen web/lib/chat/protocol.ts type still declares it required, so
+// this is a deliberate, temporary mismatch: it fails a real client loudly (400
+// PROTOCOL_VERSION_MISMATCH) rather than shipping a field that's silently undefined at runtime.
+// Bump the frontend to 2 once web/lib/chat/protocol.ts is updated per web/issues.md.
+export const CHAT_PROTOCOL_VERSION = 2;
 
 /** Integer rupees. */
 export type Rupees = number;
@@ -201,7 +206,8 @@ export type OrderReviewPart = PartBase & {
     discount: Rupees;
     total: Rupees;
   };
-  payment: { method: "reserve_pay"; tokenId: string; remaining: Rupees };
+  // No tokenId — see the CHAT_PROTOCOL_VERSION comment above and web/issues.md.
+  payment: { method: "reserve_pay"; remaining: Rupees };
   editable: ("cart" | "address" | "slot")[];
 };
 

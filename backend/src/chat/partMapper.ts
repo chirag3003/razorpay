@@ -78,6 +78,15 @@ const CUSTOMER_FACING_ERRORS = new Set([
   "amount_exceeds_mandate_limit",
   "payment_declined",
   "payment_gateway_unavailable",
+  // These four were not customer-facing before place_order's confirm path ran through the model:
+  // the model could read the failure and narrate a recovery in prose ("that expired, let me get
+  // you a fresh one"). Now that confirm is a direct call with no model in the loop
+  // (chatService.handlePlaceOrderConfirm), an unmapped failure here would render nothing at all
+  // — a silent dead end on the highest-stakes action in the app. So these get real cards.
+  "quote_expired",
+  "quote_superseded",
+  "cart_changed",
+  "conflict",
 ]);
 
 const ERROR_TITLES: Record<string, string> = {
@@ -87,6 +96,10 @@ const ERROR_TITLES: Record<string, string> = {
   amount_exceeds_mandate_limit: "This order is over your per-order limit",
   payment_declined: "The payment did not go through",
   payment_gateway_unavailable: "The payment provider is unavailable",
+  quote_expired: "That order review has expired",
+  quote_superseded: "That order review is out of date",
+  cart_changed: "Your cart changed since you reviewed it",
+  conflict: "That order review could not be verified",
 };
 
 function errorActions(error: ToolError): ErrorPart["actions"] {
