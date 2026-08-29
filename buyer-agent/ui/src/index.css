@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+/*
+ * Deliberately nothing like the merchant storefront in /web.
+ * That app is a light, rounded, green grocery shop. This is a dark, dense operator console — the
+ * visual difference is doing real work in the demo: it has to be obvious at a glance that this is
+ * a separate, third-party product talking to the shop over a protocol, not another page of it.
+ */
+@theme {
+  --color-ink-950: oklch(0.16 0.012 275);
+  --color-ink-900: oklch(0.19 0.014 275);
+  --color-ink-850: oklch(0.23 0.016 275);
+  --color-ink-800: oklch(0.27 0.018 275);
+  --color-ink-700: oklch(0.36 0.02 275);
+  --color-ink-500: oklch(0.58 0.02 275);
+  --color-ink-300: oklch(0.78 0.015 275);
+  --color-ink-100: oklch(0.93 0.008 275);
+
+  --color-accent: oklch(0.72 0.17 295);
+  --color-accent-dim: oklch(0.5 0.14 295);
+  --color-signal: oklch(0.78 0.15 195);
+  --color-caution: oklch(0.8 0.16 75);
+  --color-danger: oklch(0.68 0.19 25);
+  --color-good: oklch(0.75 0.16 155);
+
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Slim scrollbars so dense panels do not lose horizontal room to chrome. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-700) transparent;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+.animate-dot { animation: pulse-dot 1.2s ease-in-out infinite; }
+.animate-dot:nth-child(2) { animation-delay: 0.15s; }
+.animate-dot:nth-child(3) { animation-delay: 0.3s; }

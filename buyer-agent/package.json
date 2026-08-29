@@ -1,0 +1,16 @@
+{
+  "name": "buyer-agent",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "server",
+    "ui"
+  ],
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "dev:server": "bun run --filter @buyer-agent/server dev",
+    "dev:ui": "bun run --filter @buyer-agent/ui dev",
+    "typecheck": "bun run --filter '*' typecheck",
+    "build": "bun run --filter @buyer-agent/ui build"
+  }
+}

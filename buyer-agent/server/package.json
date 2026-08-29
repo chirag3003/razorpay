@@ -1,0 +1,22 @@
+{
+  "name": "@buyer-agent/server",
+  "private": true,
+  "type": "module",
+  "module": "src/index.ts",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@a2a-js/sdk": "^1.1.0",
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "hono": "^4.13.5",
+    "zod": "^4.5.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^7.0.2"
+  }
+}
