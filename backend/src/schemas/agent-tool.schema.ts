@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   DELIVERY_SLOTS,
   MAX_CART_ITEM_QTY,
+  MAX_PRODUCT_PRICE,
   RESERVE_PAY_MAX_AMOUNT,
   RESERVE_PAY_MAX_EXPIRY_DAYS,
 } from "../constants";
@@ -42,8 +43,20 @@ export const searchProductsSchema = z.object({
       "Products must carry ALL listed tags (AND), unlike category which is ANY. The vocabulary " +
         "is exactly these four values."
     ),
-  minPrice: z.number().int().nonnegative().optional().describe("Minimum price in rupees."),
-  maxPrice: z.number().int().positive().optional().describe("Maximum price in rupees."),
+  minPrice: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(MAX_PRODUCT_PRICE)
+    .optional()
+    .describe("Minimum price in rupees. Omit for no lower bound — do not pass 0 for that."),
+  maxPrice: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_PRODUCT_PRICE)
+    .optional()
+    .describe("Maximum price in rupees. Omit for no upper bound — do not pass a huge number."),
   inStockOnly: z.boolean().optional().describe("Only return products currently in stock."),
   sort: z
     .enum(["popularity", "price-asc", "price-desc", "rating", "newest"])

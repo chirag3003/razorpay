@@ -6,6 +6,14 @@ export const CURRENCY = "INR";
 export const FREE_DELIVERY_THRESHOLD = 199;
 export const DELIVERY_FEE = 25;
 
+// Ceiling for a price filter on search_products. products.price is a Postgres `integer` column
+// (max 2147483647), and search_products' minPrice/maxPrice had no upper bound at all — an LLM
+// asked for "no limit" once sent `maxPrice: Number.MAX_SAFE_INTEGER` (9007199254740991), which
+// overflowed the column and crashed the query instead of returning a validation error the model
+// could recover from. This is far above any real product price, so it never constrains a
+// legitimate search; it only catches sentinel/overflow values before they reach the DB.
+export const MAX_PRODUCT_PRICE = 1_000_000;
+
 export function getDeliveryFee(subtotal: number) {
   if (subtotal === 0) return 0;
   return subtotal >= FREE_DELIVERY_THRESHOLD ? 0 : DELIVERY_FEE;
