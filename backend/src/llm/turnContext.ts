@@ -19,11 +19,11 @@ import type { WidgetActionInput } from "../schemas/chat.schema";
  *    (get_cart, list_addresses, get_payment_status) before the model can say anything useful.
  *    Three DB reads on our side is much cheaper than three model turns.
  *
- * Deliberately *not* included: the product catalog (that is what search is for) and order history
- * (rarely relevant, and list_orders is one call away).
+ * Deliberately *not* included: the product catalog (that is what search is for), order history
+ * (rarely relevant, and list_orders is one call away), and cart line items (only the aggregate
+ * count/total — item-level detail must come from a live get_cart call, both so the cart widget
+ * actually renders and so a multi-round turn can't act on a snapshot that's since gone stale).
  */
-
-const MAX_LINES_SHOWN = 12;
 
 function formatRecentActions(actions: WidgetActionInput[]): string | null {
   const notes = actions
@@ -94,17 +94,13 @@ export async function buildTurnContext(input: {
   if (cart.items.length === 0) {
     lines.push("Cart: empty.");
   } else {
+    // Deliberately no per-item breakdown here — see buildTurnContext's doc comment. Line items
+    // and itemIds must come from a live get_cart call, both so the customer sees the cart widget
+    // and so the numbers can't drift from a snapshot taken at the top of the turn.
     lines.push(
-      `Cart: ${cart.itemCount} item(s) · subtotal ₹${cart.subtotal} · delivery ₹${cart.deliveryFee} · total ₹${cart.total}`
+      `Cart: ${cart.itemCount} item(s) · subtotal ₹${cart.subtotal} · delivery ₹${cart.deliveryFee} · total ₹${cart.total}. ` +
+        `Call get_cart for the line items — do not guess them.`
     );
-    for (const item of cart.items.slice(0, MAX_LINES_SHOWN)) {
-      lines.push(
-        `  - ${item.product.name} (${item.product.unit}) × ${item.qty} @ ₹${item.product.price} · itemId ${item.itemId}`
-      );
-    }
-    if (cart.items.length > MAX_LINES_SHOWN) {
-      lines.push(`  - …and ${cart.items.length - MAX_LINES_SHOWN} more (call get_cart for all)`);
-    }
   }
 
   if (addresses.length === 0) {

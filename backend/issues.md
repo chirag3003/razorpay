@@ -32,6 +32,32 @@ Razorpay's description verbatim, and no mandate can reach `confirmed`. Everythin
 need the gateway is verified working: validation, the guard chain and its error codes, the
 one-live-mandate-per-user index, abandoned-mandate expiry, audit rows, and the webhook router.
 
+## ~~Bug: "what's in my cart" answered in text, never the cart widget~~ — resolved
+
+Found during frontend integration testing: asking the chat "What is in my cart?" got a plain-text
+reply ("Your cart has one item: Toned Milk, 1 L packet, at ₹58...") instead of the `cart_summary`
+widget the frontend renders for exactly this.
+
+**Root cause:** `llm/turnContext.ts`'s `buildTurnContext()` rebuilds a `CURRENT CONTEXT` block from
+Postgres every turn, and it included the full itemized cart (name, qty, price, itemId per line) as
+a latency shortcut. `systemPrompt.ts` told the model not to call a tool "just to re-read something
+it already tells you" — so the model answered straight from that context text. The
+`cart_summary` widget is only ever produced (`chat/partMapper.ts`, `toolResultToPart`) when
+`get_cart` (or another cart-mutating tool) actually runs, so a context-only answer never rendered
+one. This was also a freshness gap, not just a UX one: `CURRENT CONTEXT` is a snapshot taken once
+at the top of the turn, so a multi-round turn or an out-of-band cart change elsewhere could leave
+the model reciting stale numbers instead of re-checking the DB.
+
+**Fix:** `buildTurnContext()` now only puts the aggregate line (item count, subtotal, delivery,
+total) in context — no per-item breakdown, no itemIds. `systemPrompt.ts` now explicitly carves out
+an exception to the "don't re-read what context tells you" rule for cart line items, and adds a
+"never describe cart contents from memory — always call get_cart" rule alongside the existing
+never-state-an-unverified-price rule. With item-level detail and itemIds gone from context, the
+model has no path to answer a cart-contents question, or to call `update_cart_item`/
+`remove_from_cart` (both require an itemId "from get_cart" per their own tool descriptions), other
+than calling `get_cart` — which is also what renders the widget and guarantees the numbers are
+this instant's DB truth, not a snapshot from the top of the turn.
+
 ## ~~Missing: profile update endpoint~~ — resolved
 
 `PATCH /api/auth/me` is implemented (`src/routes/auth.ts`, `userService.updateUser`), matching
