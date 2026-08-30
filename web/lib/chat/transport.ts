@@ -1,15 +1,12 @@
 /**
  * The seam. Everything above this line (store, components) is written against
- * `ChatTransport` and never learns whether the events came from a scripted mock
- * or a real streaming backend.
- *
- * Swapping in the real agent is: implement `createSseTransport()` to parse
- * `text/event-stream` into the same `ServerEvent` union, and flip the env var.
- * No component or store change.
+ * `ChatTransport` and never learns how the events were actually produced —
+ * that used to be a scripted mock, now it's `createSseTransport()` parsing
+ * the real backend's `text/event-stream` response.
  */
 
 import type { ChatRequest, ServerEvent } from "@/lib/chat/protocol";
-import { createMockTransport } from "@/lib/chat/mock-transport";
+import { createSseTransport } from "@/lib/chat/sse-transport";
 
 export interface ChatTransport {
   send(req: ChatRequest, signal: AbortSignal): AsyncIterable<ServerEvent>;
@@ -18,9 +15,6 @@ export interface ChatTransport {
 let cached: ChatTransport | null = null;
 
 export function getChatTransport(): ChatTransport {
-  if (!cached) {
-    // Only the mock exists today; the branch is here so the swap is obvious.
-    cached = createMockTransport();
-  }
+  if (!cached) cached = createSseTransport();
   return cached;
 }

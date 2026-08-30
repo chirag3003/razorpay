@@ -13,7 +13,7 @@
 
 import type { AddressFormValues } from "@/lib/validation";
 
-export const CHAT_PROTOCOL_VERSION = 1;
+export const CHAT_PROTOCOL_VERSION = 2;
 
 /** Integer rupees. */
 export type Rupees = number;
@@ -207,7 +207,6 @@ export type OrderReviewPart = PartBase & {
   };
   payment: {
     method: "reserve_pay";
-    tokenId: string;
     remaining: Rupees;
   };
   editable: ("cart" | "address" | "slot")[];

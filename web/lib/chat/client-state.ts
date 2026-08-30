@@ -7,7 +7,6 @@
  */
 
 import { useCartStore } from "@/store/cart-store";
-import { getMandate } from "@/lib/chat/mock-reserve-pay";
 import type { Address } from "@/lib/types";
 import type { ChatCartLine, ClientState, WidgetAction } from "@/lib/chat/protocol";
 
@@ -44,7 +43,9 @@ export function buildClientState(input: {
     },
     addressCount: input.addresses.length,
     defaultAddressId: defaultAddress?.id ?? null,
-    mandate: getMandate(),
+    // The server rebuilds mandate truth from the DB every turn and never reads
+    // this field — nothing to send.
+    mandate: null,
     recentActions: input.recentActions,
   };
 }

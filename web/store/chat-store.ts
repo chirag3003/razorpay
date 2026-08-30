@@ -4,11 +4,11 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { toast } from "sonner";
 import { getAddresses } from "@/lib/api/addresses";
+import { getChatTranscript } from "@/lib/api/chat";
 import { useAuthStore } from "@/store/auth-store";
 import { useCartStore } from "@/store/cart-store";
 import { getChatTransport } from "@/lib/chat/transport";
 import { buildClientState } from "@/lib/chat/client-state";
-import { resetMockSession } from "@/lib/chat/mock-script";
 import {
   CHAT_PROTOCOL_VERSION,
   lastTransientPartId,
@@ -128,6 +128,35 @@ const ALLOWED_OPS: ClientOp["kind"][] = [
 ];
 
 /* -------------------------------------------------------------------------- */
+/* durable conversation id                                                    */
+/* -------------------------------------------------------------------------- */
+
+// Kept in localStorage, decoupled from the sessionStorage-scoped transcript
+// below — so a returning user (new tab, browser restart) can rehydrate their
+// history from the server via `rehydrateOrGreet` instead of always
+// re-greeting from scratch.
+const CONVERSATION_ID_KEY = "freshcart-chat-conversation-id";
+
+function readStoredConversationId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return localStorage.getItem(CONVERSATION_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredConversationId(id: string) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(CONVERSATION_ID_KEY, id);
+  } catch {
+    // Private browsing / storage disabled — the id just won't survive a
+    // restart, which is a fine fallback.
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* store                                                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -151,6 +180,8 @@ type ChatState = {
   dispatch: (partId: string, action: WidgetAction) => Promise<void>;
   resetConversation: () => void;
 
+  /** Internal: try a free GET rehydrate first, falling back to a greet turn. */
+  rehydrateOrGreet: () => Promise<void>;
   /** Internal: builds the request, opens the stream, folds events into state. */
   sendTurnInternal: (turn: ClientTurn) => Promise<void>;
 };
@@ -175,11 +206,19 @@ function textMessage(role: ChatMessage["role"], text: string): ChatMessage {
   return message;
 }
 
+function initialConversationId(): string {
+  const existing = readStoredConversationId();
+  if (existing) return existing;
+  const id = crypto.randomUUID();
+  writeStoredConversationId(id);
+  return id;
+}
+
 export const useChatStore = create<ChatState>()(
   persist(
     (set, get) => ({
       open: false,
-      conversationId: crypto.randomUUID(),
+      conversationId: initialConversationId(),
       messages: [],
       status: "idle",
       activePartId: null,
@@ -193,8 +232,9 @@ export const useChatStore = create<ChatState>()(
         set({ open: true });
         const { messages, refreshAddresses } = get();
         void refreshAddresses();
-        // First open of a fresh conversation — let the agent greet.
-        if (messages.length === 0) void get().sendTurnInternal({ kind: "resume" });
+        // First open of this tab session — try to restore history for free
+        // before falling back to a greet turn.
+        if (messages.length === 0) void get().rehydrateOrGreet();
       },
 
       closeChat: () => set({ open: false }),
@@ -264,9 +304,10 @@ export const useChatStore = create<ChatState>()(
       resetConversation: () => {
         abortController?.abort();
         abortController = null;
-        resetMockSession();
+        const conversationId = crypto.randomUUID();
+        writeStoredConversationId(conversationId);
         set({
-          conversationId: crypto.randomUUID(),
+          conversationId,
           messages: [],
           status: "idle",
           activePartId: null,
@@ -278,6 +319,32 @@ export const useChatStore = create<ChatState>()(
       },
 
       /* ---------------------------------------------------------------- */
+
+      rehydrateOrGreet: async () => {
+        const token = useAuthStore.getState().token;
+        const { conversationId } = get();
+        if (token) {
+          try {
+            const transcript = await getChatTranscript(conversationId, token);
+            if (transcript.messages.length > 0) {
+              set({
+                messages: transcript.messages.map((m) => ({
+                  id: m.id,
+                  role: "assistant",
+                  createdAt: Date.now(),
+                  status: "complete",
+                  parts: m.parts,
+                })),
+              });
+              return;
+            }
+          } catch {
+            // New conversation, or the server's unreachable — fall through to
+            // the greet turn below either way.
+          }
+        }
+        await get().sendTurnInternal({ kind: "resume" });
+      },
 
       sendTurnInternal: async (turn: ClientTurn) => {
         const token = useAuthStore.getState().token;
@@ -320,7 +387,10 @@ export const useChatStore = create<ChatState>()(
             if (controller.signal.aborted) return;
             messageId = applyEvent(set, get, event, messageId);
           }
-          set({ status: "idle" });
+          // Don't clobber a status the `error` event already set — the
+          // backend's failure path is one `error` frame and then the stream
+          // just ends, with no trailing `message_end`.
+          set((s) => (s.status === "streaming" ? { status: "idle" } : s));
         } catch {
           set({
             status: "error",
@@ -338,8 +408,10 @@ export const useChatStore = create<ChatState>()(
     {
       name: "freshcart-chat",
       storage: createJSONStorage(() => sessionStorage),
+      // `conversationId` is sourced from localStorage (see
+      // `initialConversationId`/`writeStoredConversationId`), not this
+      // sessionStorage-scoped slice.
       partialize: (state) => ({
-        conversationId: state.conversationId,
         messages: state.messages,
         resolutions: state.resolutions,
         activePartId: state.activePartId,
@@ -362,7 +434,7 @@ export const useChatStore = create<ChatState>()(
 type SetFn = (partial: Partial<ChatState> | ((s: ChatState) => Partial<ChatState>)) => void;
 type GetFn = () => ChatState;
 
-function newMessageWithError(message: string): ChatMessage {
+function newMessageWithError(message: string, retryable = false): ChatMessage {
   const msg = newMessage("assistant", [
     {
       type: "error",
@@ -370,7 +442,9 @@ function newMessageWithError(message: string): ChatMessage {
       code: "server",
       title: "That didn't work",
       detail: message,
-      actions: [],
+      actions: retryable
+        ? [{ id: "retry", label: "Try again", action: { type: "retry" } as WidgetAction }]
+        : [],
     },
   ]);
   msg.status = "complete";
@@ -461,10 +535,14 @@ function applyEvent(
     }
 
     case "error":
-      set({
+      // The mock never really failed mid-stream, so this only mattered in
+      // theory before: without a transcript entry, a real failure just looks
+      // like the assistant silently stopped thinking.
+      set((s) => ({
         status: "error",
         error: { code: event.code, message: event.message, retryable: event.retryable },
-      });
+        messages: [...s.messages, newMessageWithError(event.message, event.retryable)],
+      }));
       return messageId;
   }
 }
