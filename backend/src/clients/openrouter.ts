@@ -2,15 +2,10 @@ import { OpenRouter } from "@openrouter/sdk";
 import { env } from "../config/env";
 
 /**
- * The single OpenRouter client, created once like clients/razorpay.ts.
+ * The single OpenRouter client. `httpReferer`/`appTitle` are attribution headers; they make
+ * requests identifiable in the OpenRouter activity log.
  *
- * `httpReferer` / `appTitle` are OpenRouter's attribution headers — they put the app on the
- * public leaderboard and, more usefully here, make requests identifiable in the OpenRouter
- * activity log when a demo goes sideways.
- *
- * Only src/llm may import this (backend/CLAUDE.md, "LLM Isolation"). Nothing in /services that
- * touches money is allowed to reach it, which stays greppable precisely because the import path
- * is this narrow.
+ * Only src/llm may import this (backend/CLAUDE.md, "LLM Isolation").
  */
 export const openrouter = new OpenRouter({
   apiKey: env.OPENROUTER_API_KEY,
@@ -20,13 +15,8 @@ export const openrouter = new OpenRouter({
   appTitle: "Razorpay Store Growth Agent",
 });
 
-/**
- * Primary model plus fallbacks, in the order OpenRouter should try them.
- *
- * OpenRouter's `models` array does the failover server-side: if the primary is down, rate-limited
- * or refuses, it routes to the next one without a second round trip from us. That is the whole
- * of our provider-resilience story, and it costs one array.
- */
+// Primary plus fallbacks, in try order. OpenRouter's `models` array fails over server-side, so
+// a dead primary costs no extra round trip. This is the whole provider-resilience story.
 export const modelChain: string[] = [
   env.OPENROUTER_MODEL,
   ...(env.OPENROUTER_FALLBACK_MODEL ? [env.OPENROUTER_FALLBACK_MODEL] : []),

@@ -3,23 +3,16 @@ import type { addresses, orders, products } from "../../db/schema";
 import type { presentMandate } from "../../services/reservePayService";
 
 /**
- * Projections from service/DB rows to the shapes tool callers see.
+ * DB rows -> the shapes tool callers see. Two jobs: token economy (a raw catalog row is ~180
+ * tokens, most of it placeholder image URLs and a description identical across all 58 products),
+ * and containment (getCartWithTotals and getOrderWithItems nest the entire products row,
+ * `archivedAt` and raw `categoryId` included).
  *
- * Two jobs. First, token economy: a raw catalog row is ~180 tokens, ~62% of which is three
- * placeholder image URLs and a boilerplate description identical across all 58 products, so a
- * single default page of search results would cost ~2,200 tokens of near-zero information.
- * Second, containment: `getCartWithTotals` and `getOrderWithItems` nest the *entire* products
- * row, including `archivedAt` and a raw `categoryId` FK that nothing outside the DB should see.
+ * Shapes mirror web/lib/chat/protocol.ts so tool output can go almost straight into a message
+ * part. Lives in the tool layer, not /services — services stay caller-agnostic.
  *
- * Shapes deliberately mirror web/lib/chat/protocol.ts (ChatProduct, ChatCartLine, ChatAddress,
- * ChatSlot, ChatMandate) so the AI layer can pass tool output almost straight into a message part
- * instead of re-mapping it.
- *
- * MONEY: everything here is integer rupees, matching protocol.ts and the rest of the app. The
- * Reserve Pay tables are the only place paise exist, so toAgentMandate is the one presenter that
- * converts.
- *
- * These live in the tool layer, not in /services — services stay caller-agnostic.
+ * MONEY: integer rupees throughout. The Reserve Pay tables are the only paise, so toAgentMandate
+ * is the one presenter that converts.
  */
 
 type ProductRow = typeof products.$inferSelect;
@@ -127,13 +120,10 @@ export function toAgentSlots() {
 type PresentedMandate = ReturnType<typeof presentMandate>;
 
 /**
- * Mirrors ChatMandate. Two conversions happen here and nowhere else:
- *
- * - paise → rupees, since these are the only paise-denominated values in the system.
- * - our seven-state mandate lifecycle collapses onto the frontend's three. That loses detail, so
- *   the richer status travels alongside in `get_payment_status`'s envelope rather than being
- *   thrown away: "paused" and "failed" both surface as "revoked" here because the only thing a
- *   shopper can do about either is set up a new block.
+ * Mirrors ChatMandate. Two conversions happen only here: paise -> rupees, and the seven-state
+ * mandate lifecycle collapsed onto the frontend's three. "paused" and "failed" both surface as
+ * "revoked" because the shopper's only move for either is a new block; the richer status travels
+ * alongside as `detailedStatus` rather than being lost.
  */
 export function toAgentMandate(mandate: PresentedMandate) {
   const status =
@@ -167,8 +157,8 @@ export function toAgentOrder(
     status: order.status,
     placedAt: order.placedAt,
     deliverySlot: order.deliverySlot,
-    // The Razorpay payment id. Surfaced because the chat order-confirmation widget shows it —
-    // it is the reference a customer quotes when something goes wrong.
+    // Shown by the order-confirmation widget — the reference a customer quotes when something
+    // goes wrong.
     paymentId: order.razorpayPaymentId,
     addressOneLine: [
       order.address.line1,
@@ -192,7 +182,7 @@ export function toAgentOrder(
   };
 }
 
-/** Order list entries drop the line items entirely — a model asking "my orders" wants a list. */
+/** Drops line items entirely — a model asking "my orders" wants a list, not a dashboard. */
 export function toAgentOrderSummary(
   order: OrderRow & { items: Array<{ qty: number }> }
 ) {

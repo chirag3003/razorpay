@@ -24,16 +24,11 @@ import * as paymentService from "./paymentService";
 import { buildUpiIntentLinks } from "../utils/upi-intent";
 import { pgErrorCode, PG_UNIQUE_VIOLATION } from "../utils/db-error";
 
-// UPI Reserve Pay (single block, multiple debit).
+// UPI Reserve Pay (single block, multiple debit): guards, persistence, audit. The customer
+// approves one block with their UPI PIN; every debit after that is server-to-server with no
+// customer interaction, which is what makes AI-initiated ordering possible.
 //
-// The customer authorises one block with their UPI PIN; after that every purchase is a
-// server-to-server debit against that block with no customer interaction at all. That headless
-// half is what makes AI-initiated ordering possible — a chat interface or an external agent
-// cannot drive a Razorpay Checkout popup.
-//
-// This file owns the flow: guards, persistence, audit. The raw gateway calls live in
-// paymentService (backend/CLAUDE.md: one place touches Razorpay). Per root Hard Rule #1 this
-// file must never import from /llm — it is transaction core, and it stays deterministic.
+// Raw gateway calls live in paymentService. Never import /llm — transaction core (Hard Rule #1).
 
 type MandateRow = typeof reservePayMandates.$inferSelect;
 
@@ -86,10 +81,7 @@ export async function listMandates(userId: string) {
     .orderBy(desc(reservePayMandates.createdAt));
 }
 
-/**
- * Razorpay links recurring tokens to a customer, so a user gets exactly one Razorpay customer
- * that every mandate they ever create hangs off. Creating a second would orphan earlier tokens.
- */
+/** One Razorpay customer per user, reused forever — a second would orphan earlier tokens. */
 async function ensureRazorpayCustomer(user: typeof users.$inferSelect) {
   if (user.razorpayCustomerId) return user.razorpayCustomerId;
 
@@ -108,17 +100,16 @@ async function ensureRazorpayCustomer(user: typeof users.$inferSelect) {
 }
 
 /**
- * Creates the authorisation transaction: blocks funds pending the customer's approval.
- *
- * Returns a `pending` mandate plus the UPI deep link the customer has to approve. Nothing is
- * debitable until they do and syncMandate picks up the resulting token.
+ * Creates the authorisation transaction: blocks funds pending the customer's approval. Returns a
+ * `pending` mandate plus the UPI deep link. Nothing is debitable until syncMandate picks up the
+ * resulting token.
  */
 export async function createMandate(
   userId: string,
   input: { amountInRupees: number; expiryDays?: number }
 ) {
-  // Re-asserted here rather than trusting the Zod schema: this service is the shared layer, and
-  // the chat/agent callers arriving in the next phase won't come through a route validator.
+  // Re-asserted rather than trusting the Zod schema: chat and MCP callers reach this service
+  // without passing a route validator.
   if (input.amountInRupees <= 0 || input.amountInRupees > RESERVE_PAY_MAX_AMOUNT) {
     throw new MandateAmountExceededError(
       `Reserve Pay blocks are limited to ₹${RESERVE_PAY_MAX_AMOUNT}`
@@ -133,17 +124,15 @@ export async function createMandate(
   await releaseAbandonedMandate(userId);
 
   const user = await requireUser(userId);
-  // Before the slot claim on purpose: creating a customer blocks no funds and is idempotent
-  // (fail_existing "0"), so a wasted call here costs nothing. Everything after this point can
-  // block real money, which is why the DB row comes first.
+  // Before the slot claim: creating a customer blocks no funds and is idempotent, so a wasted
+  // call costs nothing. Everything after this point can block real money.
   const customerId = await ensureRazorpayCustomer(user);
 
   const amountPaise = paymentService.toPaise(input.amountInRupees);
   const expiresAt = new Date(Date.now() + expiryDays * MS_PER_DAY);
 
-  // The insert is the atomic slot claim. Doing it before the gateway call is what stops a lost
-  // race from leaving the customer with funds blocked at Razorpay and no local row to track,
-  // revoke, or route webhooks to — an orphan we could neither see nor release.
+  // The insert is the atomic slot claim, before the gateway call: a lost race must not leave
+  // funds blocked at Razorpay with no local row to track, revoke, or route webhooks to.
   let mandate: MandateRow;
   try {
     const [inserted] = await db
@@ -172,8 +161,8 @@ export async function createMandate(
       amountPaise,
       customerId,
       receipt: `rp_auth_${Date.now().toString(36)}`,
-      // Shown to the customer inside their UPI app while they approve. Razorpay caps this and
-      // rejects special characters, so keep it short and plain.
+      // Shown in the customer's UPI app. Razorpay caps the length and rejects special
+      // characters — keep it short and plain.
       description: "Agent ordering balance",
       expireAt: Math.floor(expiresAt.getTime() / 1000),
     });
@@ -186,8 +175,8 @@ export async function createMandate(
       email: user.email,
     });
   } catch (err) {
-    // Mark the claim dead rather than deleting it: the row is the audit trail of an attempt
-    // that reached the gateway, and a terminal status releases the per-user slot immediately.
+    // Marked dead, not deleted: the row is the audit trail of an attempt that reached the
+    // gateway, and a terminal status releases the per-user slot immediately.
     await db
       .update(reservePayMandates)
       .set({
@@ -244,11 +233,9 @@ export async function createMandate(
 }
 
 /**
- * Frees the one-live-mandate-per-user slot when the previous attempt was abandoned.
- *
- * Without this a customer who opens the UPI approval link and then closes their app holds the
- * slot forever — every retry answers 409 and they can never set Reserve Pay up. Syncs first, so
- * a mandate they actually did approve is recognised rather than thrown away.
+ * Frees the one-live-mandate-per-user slot after an abandoned attempt — otherwise a customer who
+ * closes their UPI app mid-approval holds it forever and every retry answers 409. Syncs first, so
+ * a mandate they did approve is recognised rather than discarded.
  */
 async function releaseAbandonedMandate(userId: string) {
   const existing = await getLiveMandate(userId);
@@ -303,11 +290,9 @@ function mapRecurringStatus(status: string | undefined): MandateRow["status"] | 
 }
 
 /**
- * Reconciles a mandate against Razorpay. Razorpay is the source of truth for the blocked and
- * debited amounts — our per-debit increment is an optimistic write that this corrects.
- *
- * Both the status endpoint (polled while the customer is approving in their UPI app) and the
- * webhook handlers call this, so mandate state is mapped in exactly one place.
+ * Reconciles a mandate against Razorpay, which is the source of truth for blocked and debited
+ * amounts — the per-debit increment is an optimistic write this corrects. Both the polled status
+ * endpoint and the webhook handlers call it, so state is mapped in exactly one place.
  */
 export async function syncMandate(mandateId: string) {
   const [mandate] = await db
@@ -318,13 +303,13 @@ export async function syncMandate(mandateId: string) {
 
   if (!mandate) throw new NotFoundError("Reserve Pay mandate");
 
-  // Terminal states never change again, and every sync costs two Razorpay round-trips.
+  // Terminal states never change again; each sync costs two Razorpay round trips.
   if (!isLive(mandate)) return mandate;
 
   const updates: Partial<typeof reservePayMandates.$inferInsert> = {};
   let tokenId = mandate.razorpayTokenId;
 
-  // The token id only exists once the customer approves; until then the payment carries a null.
+  // The token id exists only once the customer approves; until then the payment carries null.
   if (!tokenId && mandate.razorpayPaymentId) {
     const payment = await paymentService.fetchPayment(mandate.razorpayPaymentId);
     tokenId = payment.token_id ?? null;
@@ -348,17 +333,17 @@ export async function syncMandate(mandateId: string) {
     if (typeof details?.amount_blocked === "number") {
       updates.amountBlockedPaise = details.amount_blocked;
     } else if ((updates.status ?? mandate.status) === "confirmed") {
-      // Razorpay omits amount_blocked on some confirmed UPI tokens. Leaving it at 0 would make
-      // remainingPaise() 0 and reject every debit with INSUFFICIENT_BLOCKED_BALANCE and no
-      // explanation anywhere. For SBMD the block equals max_amount, which we know.
+      // Razorpay omits amount_blocked on some confirmed UPI tokens. Left at 0 it would make
+      // remainingPaise() 0 and reject every debit with no explanation. For SBMD the block
+      // equals max_amount.
       updates.amountBlockedPaise =
         mandate.amountBlockedPaise || token.max_amount || mandate.maxAmountPaise;
     }
     if (typeof details?.amount_debited === "number") {
-      // Monotonic on purpose. Razorpay updates amount_debited asynchronously, so a sync run
-      // moments after a debit can still report the pre-debit figure — taking it verbatim would
-      // hand back money we already spent and let the next balance check pass on phantom funds.
-      // It also protects the pre-charge reservation, which is local-only until Razorpay catches up.
+      // Monotonic: Razorpay updates amount_debited asynchronously, so a sync moments after a
+      // debit can still report the pre-debit figure. Taking it verbatim would hand back money
+      // already spent and pass the next balance check on phantom funds. Also protects the
+      // pre-charge reservation, which is local-only until Razorpay catches up.
       updates.amountDebitedPaise = Math.max(mandate.amountDebitedPaise, details.amount_debited);
     }
     if (typeof token.max_amount === "number") updates.maxAmountPaise = token.max_amount;
@@ -373,7 +358,7 @@ export async function syncMandate(mandateId: string) {
   const status = updates.status ?? mandate.status;
   const expiresAt = updates.expiresAt ?? mandate.expiresAt;
 
-  // Two terminal states Razorpay doesn't always report explicitly, derived from its own numbers.
+  // Two terminal states Razorpay doesn't always report, derived from its own numbers.
   if (status === "confirmed" && blocked > 0 && debited >= blocked) {
     updates.status = "exhausted";
   } else if (status !== "failed" && expiresAt.getTime() <= Date.now()) {
@@ -396,9 +381,9 @@ function isLive(mandate: MandateRow) {
 }
 
 /**
- * The guard chain, run in the order backend/CLAUDE.md fixes: confirmed -> not expired/revoked ->
- * within the per-transaction cap -> within the remaining balance. Do not reorder — a caller
- * should learn its mandate is dead before it learns anything about balances.
+ * The guard chain, in the order backend/CLAUDE.md fixes: confirmed -> not expired -> within the
+ * per-transaction cap -> within the remaining balance. Do not reorder: a caller must learn its
+ * mandate is dead before it learns anything about balances.
  */
 function assertDebitable(mandate: MandateRow, amountPaise: number) {
   if (mandate.status !== "confirmed") {
@@ -417,11 +402,9 @@ function assertDebitable(mandate: MandateRow, amountPaise: number) {
 }
 
 /**
- * Reserves funds and creates the Razorpay order for a debit, without charging anything yet.
- *
- * Split from executeDebit so a caller that needs to record state between reserving and charging
- * — checkoutWithReservePay does, it has to stash the cart snapshot — can do so inside a window
- * where no money has moved.
+ * Reserves funds and creates the Razorpay order, without charging. Split from executeDebit so a
+ * caller can record state in the window where no money has moved — checkoutWithReservePay stashes
+ * the cart snapshot there.
  */
 export async function prepareDebit(params: {
   userId: string;
@@ -432,21 +415,21 @@ export async function prepareDebit(params: {
   const live = await getLiveMandate(params.userId);
   if (!live) throw new MandateNotActiveError();
 
-  // Sync first so the balance check runs on Razorpay's figures, not on a local count that may
-  // have drifted — a debit whose response we lost still spent the customer's money.
+  // Sync first so the balance check runs on Razorpay's figures: a debit whose response was lost
+  // still spent the customer's money.
   const mandate = await syncMandate(live.id);
   const amountPaise = paymentService.toPaise(params.amountInRupees);
 
-  // Runs first so the caller gets the *specific* domain error (expired vs over-cap vs
-  // insufficient) in the order backend/CLAUDE.md fixes. The UPDATE below re-checks the same
-  // conditions atomically; this is for the error message, that is for correctness.
+  // For the error message only — the caller gets the specific domain error (expired vs over-cap
+  // vs insufficient). The UPDATE below re-checks the same conditions atomically; that is the
+  // correctness guarantee.
   assertDebitable(mandate, amountPaise);
 
   if (!mandate.razorpayTokenId) throw new MandateNotActiveError();
 
-  // The real commit point. Drawing down the ledger in one conditional UPDATE means two
-  // concurrent debits can't both pass the check above and lose one of the drawdowns — the
-  // second one matches no rows because the first already moved amount_debited_paise.
+  // The commit point. One conditional UPDATE means two concurrent debits can't both pass the
+  // check above — the second matches no rows, because the first already moved
+  // amount_debited_paise.
   const [reserved] = await db
     .update(reservePayMandates)
     .set({
@@ -465,8 +448,8 @@ export async function prepareDebit(params: {
     .returning();
 
   if (!reserved) {
-    // Lost the race. Re-read and re-run the guard chain so the caller still gets a named reason
-    // rather than a bare conflict.
+    // Lost the race. Re-run the guard chain so the caller gets a named reason, not a bare
+    // conflict.
     assertDebitable(await syncMandate(mandate.id), amountPaise);
     throw new ConflictError("Could not reserve funds against the mandate. Please retry.");
   }
@@ -483,8 +466,8 @@ export async function prepareDebit(params: {
     throw err;
   }
 
-  // Written before the charge, so a debit whose response never arrives still leaves a row
-  // carrying the razorpay order id to reconcile against.
+  // Written before the charge: a debit whose response never arrives still leaves a row carrying
+  // the Razorpay order id to reconcile against.
   const [debit] = await db
     .insert(reservePayDebits)
     .values({
@@ -545,9 +528,9 @@ export async function executeDebit(
       notes: options.notes,
     });
   } catch (err) {
-    // A decline is a business outcome, not just an exception: persist Razorpay's own error code
-    // and description, hand the reserved funds back, then audit before rethrowing. Root Hard
-    // Rule #4 covers failed money-moving attempts too, and the Recovery Agent reads these rows.
+    // A decline is a business outcome, not just an exception: persist Razorpay's error code and
+    // description, release the reservation, audit, then rethrow. Hard Rule #4 covers failed
+    // money-moving attempts too.
     const { code, description } = paymentService.parseGatewayError(err);
 
     await markDebitOutcome(debit.id, {
@@ -573,15 +556,13 @@ export async function executeDebit(
       },
     });
 
-    // The raw SDK error is deliberately left unwrapped by paymentService so the code and
-    // description above could be persisted. Now that they are, convert it into a domain error so
-    // app.onError answers 502 with the gateway's own reason rather than a blank 500.
+    // paymentService leaves this error unwrapped so the code and description could be
+    // persisted above. Now wrapped, so app.onError answers 502 with the gateway's own reason.
     throw new PaymentGatewayError(description ?? "Reserve Pay debit was declined");
   }
 
-  // The headless path verifies the same signature the browser path does. Skipping it here —
-  // on the flow whose whole claim is "bounded, gated, auditable" — would mean trusting an
-  // unauthenticated response to decide that money moved.
+  // The headless path verifies the same signature the browser path does — skipping it would mean
+  // trusting an unauthenticated response to decide that money moved.
   const verified = paymentService.verifyPaymentSignature({
     razorpayOrderId: payment.razorpay_order_id,
     razorpayPaymentId: payment.razorpay_payment_id,
@@ -609,9 +590,8 @@ export async function executeDebit(
       },
     });
 
-    // Reservation deliberately NOT released: the charge may well have succeeded and only its
-    // proof is suspect. Holding the funds is the safe side of that ambiguity, and syncMandate
-    // reconciles against Razorpay's own figure on the next read.
+    // Reservation deliberately NOT released: the charge may have succeeded with only its proof
+    // suspect, so holding the funds is the safe side. syncMandate reconciles on the next read.
     throw new PaymentVerificationError();
   }
 
@@ -645,10 +625,8 @@ export async function executeDebit(
 }
 
 /**
- * Debits a confirmed mandate in one call — the headless payment primitive.
- *
- * Callers that need to persist something between reserving and charging should use
- * prepareDebit/executeDebit directly instead.
+ * Debits a confirmed mandate in one call. Callers needing to persist state between reserving and
+ * charging use prepareDebit/executeDebit directly.
  */
 export async function debitFromMandate(params: {
   userId: string;
@@ -665,13 +643,10 @@ export async function debitFromMandate(params: {
 }
 
 /**
- * Hands reserved funds back after a debit fails. Floored at zero.
- *
- * Also un-exhausts the mandate when the release makes funds available again. prepareDebit
- * reserves *before* charging, so a debit that claims the last of the balance and then gets
- * declined would otherwise leave syncMandate's `debited >= blocked` rule holding the mandate at
- * `exhausted` — a terminal status that syncMandate refuses to re-read — permanently killing a
- * mandate that still has the customer's money in it.
+ * Hands reserved funds back after a failed debit, floored at zero, and un-exhausts the mandate
+ * when that frees funds again. Without the un-exhaust, a debit that claims the last of the
+ * balance and is then declined leaves the mandate at `exhausted` — terminal, so syncMandate
+ * refuses to re-read it — permanently killing a mandate that still holds the customer's money.
  */
 export async function releaseReservation(mandateId: string, amountPaise: number) {
   const released = sql`greatest(0, ${reservePayMandates.amountDebitedPaise} - ${amountPaise})`;
@@ -697,14 +672,13 @@ export async function attachOrderToDebit(debitId: string, orderId: string) {
 }
 
 /**
- * Cancels a mandate and releases the customer's remaining blocked funds.
+ * Cancels a mandate and releases the remaining blocked funds — a real release via Razorpay's
+ * Cancel Token API, not just a local flag.
  *
- * Razorpay's Cancel Token API unblocks everything still held and credits it back to the
- * customer instantly, so this is a real release, not just a local flag. Razorpay forwards the
- * request to NPCI without extra validation and it can fail on the remitter's side — when that
- * happens we still mark the mandate revoked locally (we will not debit it again) and record the
- * gateway's reason, because the alternative is a mandate the customer can neither use nor
- * cancel. If the funds are still held, Razorpay auto-reverses them 10 minutes before expiry.
+ * Razorpay forwards to NPCI without extra validation, so cancellation can fail on the remitter's
+ * side. It is still marked revoked locally and the gateway's reason recorded, because the
+ * alternative is a mandate the customer can neither use nor cancel. Funds still held are
+ * auto-reversed by Razorpay 10 minutes before expiry.
  */
 export async function revokeMandate(userId: string, mandateId: string) {
   const mandate = await requireOwnedMandate(userId, mandateId);
@@ -742,8 +716,8 @@ export async function revokeMandate(userId: string, mandateId: string) {
     actorId: userId,
     action: "reserve_pay.mandate.revoke",
     mandateScope: { mandateId, remainingPaise: remainingPaise(mandate) },
-    // The local revoke always takes effect; the outcome reflects whether the customer's funds
-    // were actually released, which is the part that matters to them.
+    // The local revoke always takes effect; the outcome reflects whether the funds were
+    // actually released.
     decision: "approved",
     outcome: cancellationError ? "failed" : "success",
     metadata: {
@@ -801,9 +775,8 @@ export async function markDebitOutcome(
 }
 
 /**
- * API shape for a mandate. Amounts are echoed in both units — paise because that is what we
- * store and what reconciles against Razorpay, rupees because that is what the rest of the API
- * speaks — and the intent link is expanded per UPI app so a client can skip the app chooser.
+ * API shape for a mandate. Amounts in both units: paise because that is what is stored and what
+ * reconciles against Razorpay, rupees because that is what the rest of the API speaks.
  */
 function present(mandate: MandateRow) {
   return {

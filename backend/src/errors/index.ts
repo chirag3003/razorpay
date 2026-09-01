@@ -51,12 +51,10 @@ export class PaymentGatewayError extends DomainError {
 }
 
 // --- Reserve Pay (UPI SBMD) ---------------------------------------------------------------
-// Thrown by reservePayService's guard chain, in the order the chain runs them. Same DomainError
-// base as everything above, so app.onError, auditService, and the future agent-interfaces layer
-// all handle them without a shape change.
+// Thrown by reservePayService's guard chain, in the order the chain runs them.
 
-// The user has no mandate in a usable state — never authorised one, or it's revoked/failed/
-// exhausted. Distinct from NotFoundError: the row may well exist, it just can't be charged.
+// No mandate in a usable state. Distinct from NotFoundError: the row may exist, it just can't
+// be charged.
 export class MandateNotActiveError extends DomainError {
   constructor(message = "No active Reserve Pay mandate") {
     super(message, 409, "MANDATE_NOT_ACTIVE");
@@ -69,24 +67,18 @@ export class MandateExpiredError extends DomainError {
   }
 }
 
-// The single debit exceeds the mandate's per-transaction cap (token.max_amount), regardless of
-// how much is left unspent. Separate from InsufficientBalanceError because the fix differs:
-// this one needs a smaller debit, that one needs a new mandate.
+// Over the per-transaction cap (token.max_amount), regardless of what is left unspent. Separate
+// from InsufficientBalanceError because the fix differs: a smaller debit, not a new mandate.
 export class MandateAmountExceededError extends DomainError {
   constructor(message = "Amount exceeds the mandate's per-transaction limit") {
     super(message, 400, "MANDATE_AMOUNT_EXCEEDED");
   }
 }
 
-// Not enough left in the block (amount_blocked - amount_debited) to cover this debit. 402 rather
-// than 400 — the request is well-formed, the funds just aren't there.
+// Not enough left in the block (amount_blocked - amount_debited). 402, not 400: the request is
+// well-formed, the funds aren't there.
 export class InsufficientBalanceError extends DomainError {
   constructor(message = "Insufficient blocked balance on the Reserve Pay mandate") {
     super(message, 402, "INSUFFICIENT_BLOCKED_BALANCE");
   }
 }
-
-// Still deferred to the agent_tokens phase — scope is a property of an agent's authority, and
-// there is no agent token to scope yet.
-//
-// export class ScopeExceededError extends DomainError { ... }

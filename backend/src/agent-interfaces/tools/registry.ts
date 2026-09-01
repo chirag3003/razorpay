@@ -7,15 +7,9 @@ import { cartTools } from "./cart";
 import { checkoutTools } from "./checkout";
 import { orderTools } from "./orders";
 
-/**
- * The one place every AI-callable action is registered.
- *
- * The first-party chat agent calls `runTool` in-process; the A2A and MCP adapters will wrap this
- * same map without adding a tool of their own. That's root Hard Rule #2 ("one service layer, two
- * callers") applied one level up — if an action isn't here, no agent can perform it, and if it is
- * here, every agent performs it identically.
- */
-const ALL_TOOLS: ToolDefinition<z.ZodType>[] = [
+// Every AI-callable action. The chat agent (in-process runTool) and the MCP adapter both wrap
+// this map without adding tools of their own — root Hard Rule #2 applied one level up.
+export const ALL_TOOLS: ToolDefinition<z.ZodType>[] = [
   ...catalogTools,
   ...cartTools,
   ...checkoutTools,
@@ -26,42 +20,12 @@ export const TOOLS: Record<string, ToolDefinition<z.ZodType>> = Object.fromEntri
   ALL_TOOLS.map((tool) => [tool.name, tool])
 );
 
-export function listTools() {
-  return ALL_TOOLS.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    readOnly: tool.readOnly,
-  }));
-}
-
 /**
- * Anthropic tool definitions, generated from the Zod inputs.
+ * Zod inputs as OpenAI-compatible function definitions. `io: "input"` is required: without it
+ * `.default()` fields are emitted as required and a model must supply every filter on every call.
  *
- * Zod 4 ships `toJSONSchema` natively, so there's no second schema to hand-write and drift from
- * the validator — which is what backend/CLAUDE.md asks for. `io: "input"` matters: without it,
- * fields carrying `.default()` are emitted as *required*, and a model would be forced to supply
- * every optional filter on every call.
- */
-export function toAnthropicTools() {
-  return ALL_TOOLS.map((tool) => {
-    const schema = z.toJSONSchema(tool.input, { io: "input" }) as Record<string, unknown>;
-    delete schema.$schema;
-    return {
-      name: tool.name,
-      description: tool.description,
-      input_schema: schema,
-    };
-  });
-}
-
-/**
- * Same schemas, shaped for OpenRouter / any OpenAI-compatible chat-completions API.
- *
- * The `filter` is what implements the storefront chat agent's hard gate on `place_order`: the
- * orchestrator omits that tool from the request body entirely on any turn the customer has not
- * explicitly confirmed. A tool that is not in the array cannot be called — no amount of prompt
- * injection or model error gets around an absent function, which is a stronger claim than a
- * sentence in a system prompt.
+ * `filter` implements chatService's `place_order` gate — a tool absent from the array cannot be
+ * called, which no system-prompt rule can guarantee.
  */
 export function toOpenAITools(filter?: (tool: ToolDefinition<z.ZodType>) => boolean) {
   return ALL_TOOLS.filter(filter ?? (() => true)).map((tool) => {
@@ -78,22 +42,7 @@ export function toOpenAITools(filter?: (tool: ToolDefinition<z.ZodType>) => bool
   });
 }
 
-/** Same schemas, shaped for an MCP server's `tools/list`. */
-export function toMcpTools() {
-  return toAnthropicTools().map(({ name, description, input_schema }) => ({
-    name,
-    description,
-    inputSchema: input_schema,
-  }));
-}
-
-/**
- * Maps a thrown error onto a structured tool failure.
- *
- * The `hint` is the important field. A model that receives an exception stalls or invents a
- * recovery; one that receives "the cart is empty, add items with add_to_cart first" simply does
- * that. Every code here earns its hint.
- */
+/** Thrown error -> structured tool failure. The `hint` is what lets a model recover rather than stall. */
 function mapError(err: unknown): ToolError {
   if (err instanceof DomainError) {
     switch (err.code) {
@@ -176,8 +125,8 @@ function mapError(err: unknown): ToolError {
     }
   }
 
-  // Anything unmapped is a bug in our code, not something the model did. Log it for us, and give
-  // the model a plain retryable failure rather than leaking an internal message into a chat.
+  // Unmapped means a bug on our side, not a model error. Log it; the model gets a plain
+  // retryable failure rather than an internal message leaked into a chat.
   console.error("Unhandled error in tool handler:", err);
   return {
     code: "server",
@@ -186,10 +135,7 @@ function mapError(err: unknown): ToolError {
   };
 }
 
-/**
- * The only entry point. Validates input, runs the handler, and **never throws** — an LLM cannot
- * catch an exception, so every failure comes back as data it can act on.
- */
+/** The only entry point. Never throws — an LLM cannot catch an exception, so failures are data. */
 export async function runTool(
   ctx: ToolContext,
   name: string,

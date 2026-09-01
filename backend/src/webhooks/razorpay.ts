@@ -23,16 +23,11 @@ type WebhookBody = {
 };
 
 /**
- * Resolves which flow a payment belongs to.
+ * Three kinds of Razorpay order — browser checkout, Reserve Pay authorisation, Reserve Pay debit
+ * — arrive on the same webhook. Dispatching on order id first is what keeps them apart.
  *
- * There are now three kinds of Razorpay order in this system — a browser checkout, a Reserve Pay
- * authorisation, and a Reserve Pay debit — and they arrive on the same webhook. Dispatching on
- * order id before doing anything is what keeps them apart.
- *
- * This also fixes a real bug: `payment.captured` previously went straight to confirmPayment,
- * which throws NotFoundError("Checkout session") when no cart matches. That escaped to
- * app.onError and answered 404, and Razorpay retries any non-2xx indefinitely. Every Reserve Pay
- * authorisation payment is exactly that case — captured, with an order id no cart will ever own.
+ * Without it, a Reserve Pay authorisation reaches confirmPayment, which throws NotFoundError when
+ * no cart matches; that answers 404, and Razorpay retries any non-2xx indefinitely.
  */
 async function resolveSource(razorpayOrderId: string) {
   const mandate = await reservePayService.findMandateByRazorpayOrderId(razorpayOrderId);
@@ -58,9 +53,8 @@ async function handlePaymentCaptured(payment: WebhookPayment) {
         status: "captured",
         razorpayPaymentId: payment.id,
       });
-      // Usually a no-op — checkoutWithReservePay already created the order synchronously and
-      // confirmPayment short-circuits on the existing row. It matters in the one bad window:
-      // the debit succeeded but the order insert didn't, and this is the retry.
+      // Usually a no-op: checkoutWithReservePay already created the order and confirmPayment
+      // short-circuits on it. It matters when the debit succeeded but the insert didn't.
       await confirmIfCheckoutPending(payment);
       return;
 
@@ -69,9 +63,8 @@ async function handlePaymentCaptured(payment: WebhookPayment) {
   }
 }
 
-// confirmPayment throws NotFoundError when no cart holds this razorpay order id. For a webhook
-// that isn't an error worth a non-2xx — it just means the payment isn't one we track a checkout
-// for (a bare test debit, a dashboard-created payment). Swallow that one case only.
+// NotFoundError here means the payment isn't one with a tracked checkout (a bare test debit, a
+// dashboard-created payment), not an error worth a non-2xx. Swallow that one case only.
 async function confirmIfCheckoutPending(payment: WebhookPayment) {
   try {
     await orderService.confirmPayment(payment.order_id, payment.id);
@@ -82,12 +75,9 @@ async function confirmIfCheckoutPending(payment: WebhookPayment) {
 }
 
 /**
- * Finds the mandate a token.* event belongs to.
- *
- * The token id alone isn't enough for the first one: we only learn a mandate's token id by
- * fetching the authorisation payment, so on the very first `token.confirmed` — the event that
- * matters most — we have nothing stored to match against. These events carry the authorisation
- * payment alongside the token, so fall back to resolving by its order id.
+ * The token id alone isn't enough for the first event: a mandate's token id is only learned by
+ * fetching the authorisation payment, so on the first `token.confirmed` there is nothing stored
+ * to match. These events carry the authorisation payment too, so fall back to its order id.
  */
 async function resolveMandateForTokenEvent(
   token: WebhookToken | undefined,
@@ -108,8 +98,7 @@ async function handlePaymentFailed(payment: WebhookPayment) {
 
   switch (source.kind) {
     case "mandate":
-      // The customer declined, or the bank rejected the block. syncMandate reads the authoritative
-      // reason off the payment itself rather than trusting the webhook payload.
+      // syncMandate reads the reason off the payment itself rather than the webhook payload.
       await reservePayService.syncMandate(source.mandate.id);
       return;
 
@@ -138,14 +127,12 @@ razorpayWebhook.post("/", async (c) => {
   const payment = body.payload?.payment?.entity;
   const token = body.payload?.token?.entity;
 
-  // Razorpay retries any non-2xx, so an unhandled throw here becomes an infinite redelivery
-  // loop. Log it and acknowledge instead: the payload is already durable on Razorpay's side, and
-  // syncMandate reconciles anything we missed the next time the mandate is read.
+  // Razorpay retries any non-2xx, so an unhandled throw becomes an infinite redelivery loop. Log
+  // and acknowledge: syncMandate reconciles anything missed the next time the mandate is read.
   try {
     switch (body.event) {
-      // Both events matter. A Reserve Pay authorisation commonly reports as `authorized` rather
-      // than `captured`, and its payment entity is the most reliable carrier of the token id —
-      // the token.* events carry only the token entity, with no order or customer to route on.
+      // Both matter: a Reserve Pay authorisation commonly reports `authorized` rather than
+      // `captured`, and its payment entity is the most reliable carrier of the token id.
       case "payment.authorized":
       case "payment.captured":
         if (payment) await handlePaymentCaptured(payment);
@@ -155,8 +142,7 @@ razorpayWebhook.post("/", async (c) => {
         if (payment) await handlePaymentFailed(payment);
         break;
 
-      // Mandate lifecycle. All four funnel into syncMandate so Razorpay's state is mapped onto
-      // ours in exactly one place, rather than once per event name.
+      // All four funnel into syncMandate, so Razorpay's state is mapped in exactly one place.
       case "token.confirmed":
       case "token.rejected":
       case "token.cancelled":

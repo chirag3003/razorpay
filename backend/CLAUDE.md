@@ -32,14 +32,27 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
                        dashboard summary, read-only user list. index.ts mounts the sub-routers;
                        every one except auth.ts applies requireAdmin.
   /agent-interfaces
-    /a2a               Agent Card + task lifecycle (submitted→working→input-required→completed).
-                       Primary interface. Task handlers validate via /schemas, call /services.
-    /mcp               Thin adapter over the same /services calls. Secondary/compatibility layer.
+    /tools             The registry every AI-callable action goes through (runTool, ALL_TOOLS).
+                       Both the first-party chat agent and /agent-interfaces/mcp wrap this same
+                       map without adding a tool of their own — root Hard Rule #2 applied one
+                       level up.
+    /mcp               buildMcpServer(ctx) — registers every ALL_TOOLS entry as an MCP tool via
+                       @modelcontextprotocol/server, translating runTool's {ok, data|error} into
+                       MCP's {content, structuredContent} / {isError, content}. No logic of its
+                       own. Mounted at POST /api/mcp (routes/mcp.ts).
+    /a2a               Not built yet. Root claude.md's stated primary interface; MCP shipped
+                       first because it matches the actual "typed structured tool calls, no LLM
+                       needed" caller shape buyer-agent's client already uses for it. See
+                       API.md's MCP section for how this was decided.
   /webhooks           Razorpay webhook receiver — validates payload via /schemas, calls
                        recoveryService for payment.failed / subscription.charged events
-  /middleware         verifyAgentToken.ts (token valid → scope/cap → Reserve Pay balance chain),
-                      auth.ts (normal human session auth for REST routes),
-                      adminAuth.ts (requireAdmin — the /api/admin token, see Conventions)
+  /middleware         auth.ts (normal human session auth for REST routes, userService.verifyToken),
+                      adminAuth.ts (requireAdmin — the /api/admin token, see Conventions).
+                      MCP's bearer-token check is inline in routes/mcp.ts instead of a third
+                      middleware file — it's a single call to @modelcontextprotocol/server's
+                      requireBearerAuth wrapping userService.verifyAgentToken, not a chain worth
+                      its own file yet. A verifyAgentToken.ts *middleware* (scope/cap → Reserve
+                      Pay balance) stays future work — see "No agent-token scoping yet" below.
   /utils              Small pure helpers with no app deps. slug.ts (slugify) — shared by the
                       seed script and the admin product/category create endpoints.
   /chat               The storefront chat wire format and its projections. protocol.ts
@@ -49,14 +62,17 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
   /llm                Every LLM API call in the backend lives here, nowhere else. See
                       "LLM Isolation" below. Provider is OpenRouter (clients/openrouter.ts);
                       OPENROUTER_MODEL is the whole provider swap.
+  /routes/oauth.ts    MCP OAuth (RFC 9728/8414/7591 + PKCE). This backend is both the
+                      Authorization Server and the Resource Server — see "MCP OAuth" below.
   constants.ts        Regulatory/config numbers centralized — RESERVE_PAY_MAX_AMOUNT (₹10,000),
                       RESERVE_PAY_MAX_EXPIRY_DAYS (90), spend-cap defaults, etc. Never hardcode
                       these inline in a service or schema.
   server.ts           Entrypoint
-
-/backend/tests        Mirrors /services. Prioritize mandateService and reservePayService —
-                      these carry the most weight in the project's "bounded/gated" claim.
 ```
+
+**There is no test suite yet.** When one is added it belongs in `/backend/tests`, mirroring
+`/services`, and should start with `mandateService` and `reservePayService` — they carry the most
+weight in the project's "bounded/gated" claim.
 
 ---
 
@@ -114,11 +130,13 @@ a written rule.
 - **Never allowed to import `/llm`:** `mandateService.ts`, `reservePayService.ts`,
   `paymentService.ts`, `verifyAgentToken.ts`, or anything in `/agent-interfaces` task handlers
   that touches cart/checkout/payment.
-- **Allowed to import `/llm`:** `chatService.ts` (the storefront Growth Agent — the only such
-  caller that exists today), `growthService.ts` (upsell/cross-sell suggestion text —
-  suggestions are advisory data only, never themselves mutate a cart), `recoveryService.ts`
-  (failure *explanation*/messaging only — root-cause classification itself stays rule-based on
-  decline codes), and the admin dashboard assistant.
+- **Allowed to import `/llm`:** `chatService.ts` (the storefront Growth Agent), `growthService.ts`
+  (upsell/cross-sell suggestion text — advisory data only, never itself mutates a cart),
+  `recoveryService.ts` (failure *explanation*/messaging only — root-cause classification itself
+  stays rule-based on decline codes), the admin dashboard assistant, and `searchAssistService.ts`
+  (turns a free-text `search_products_nl` query into `search_products`'s structured filters —
+  same "advisory, never itself mutates state" framing as `growthService.ts`; the tool handler in
+  `agent-interfaces/tools/catalog.ts` calls this service, it does not import `/llm` itself).
 - **No LLM framework.** No LangChain, no LangGraph, no agent SDK. The loop is ~180 lines in
   `llm/agentLoop.ts` and it stays that way deliberately: a framework that owns the loop, the
   tools and the state turns "where does the model touch money" from an import-graph question
@@ -155,6 +173,44 @@ a written rule.
 
 ---
 
+## MCP OAuth
+
+`routes/oauth.ts` + `services/oauthService.ts`. This backend is both the Authorization Server
+and the Resource Server for `/api/mcp` — the simplest valid MCP OAuth topology, and correct here
+since there's no separate identity provider to delegate to: `userService` already is the
+identity source.
+
+- **Two mutually-exclusive JWT kinds, one secret.** `userService.issueToken`/`verifyToken`
+  (human session, `{sub, exp}`) and `userService.issueAgentToken`/`verifyAgentToken` (agent
+  access token, `{sub, actorType: "agent", exp}`, 24h TTL vs the human token's 7 days) sign with
+  the same `JWT_SECRET` but reject each other's shape — `verifyToken` rejects any payload
+  carrying `actorType`, `verifyAgentToken` requires it. A leaked agent token cannot be replayed
+  against `/api/auth/me` or any other human route, and vice versa. One secret, not two, because
+  this is one trust boundary (the same account) tagged two ways, unlike the fully separate
+  admin auth below.
+- **An agent token is only ever minted by `oauthService.exchangeAuthorizationCode` /
+  `refreshAccessToken`**, never handed out for a human to copy-paste. There is deliberately no
+  `POST /api/auth/agent-login` — that would be the exact copy-paste flow OAuth exists to replace.
+- **PKCE is mandatory, not optional.** `createAuthorizationRequest` rejects anything but
+  `code_challenge_method: "S256"`. Agents are public clients (headless, can't keep a secret) —
+  PKCE is the actual protection, not a `client_secret`; `oauth_clients` has no secret column.
+- **The human decision step reuses the existing human session JWT**
+  (`POST /api/oauth/authorize/decision` sits behind `requireAuth`, same as every other authed
+  route) — approving a connection is "prove you're logged in, then say yes," not a new
+  credential. `GET /oauth/authorize` itself redirects to `web/`'s `/agent-connect` page (see
+  `web/issues.md`) since this backend never renders HTML.
+- **Refresh tokens are hashed at rest and rotated on every use** (`oauth_refresh_tokens.tokenHash`,
+  sha256) — a stolen refresh token is replayable exactly once before the legitimate holder's next
+  refresh finds it already revoked.
+- **No scope/spend-cap enforcement yet.** `oauthMetadata.scopes_supported` is one blanket
+  `"store:agent"` scope — every tool is available to any connected agent, same as the chat agent
+  today. Root `claude.md`'s fuller "Intent Mandate" design (`scope`, `spend_cap`, tied to a
+  Reserve Pay authorisation via an "Agent Access" settings page) is still future work; this is a
+  smaller, explicitly-scoped-down step, same simplification precedent as `ToolContext.actor`
+  existing well before anything checked it.
+
+---
+
 ## Conventions
 
 - **Hono** is the API framework, served directly on the Bun runtime — no `@hono/node-server`
@@ -179,10 +235,10 @@ a written rule.
   key — a missing `RAZORPAY_KEY_SECRET` should crash startup, not surface as a mysterious 500
   three requests in.
 - **Auth is a stateless JWT bearer token** (`hono/jwt`, signed in `userService.issueToken`),
-  deliberately the same "bearer token in `Authorization` header" shape the future `agent_tokens`
-  system will use — swapping in agent auth later doesn't require a new auth primitive, just a
-  second verification path alongside `middleware/auth.ts`.
-- **Admin auth is that second verification path, done for real.** `middleware/adminAuth.ts` +
+  deliberately the same "bearer token in `Authorization` header" shape agent auth uses too — see
+  "MCP OAuth" above for the second verification path this predicted (`userService.verifyAgentToken`,
+  checked inline in `routes/mcp.ts`, not a third `middleware/*.ts` file).
+- **Admin auth is a third, fully separate verification path.** `middleware/adminAuth.ts` +
   `services/adminAuthService.ts`: `POST /api/admin/login` exchanges the shared `ADMIN_PASSWORD`
   for a JWT signed with a *separate* secret (`ADMIN_JWT_SECRET`), payload `{ role: "admin" }`,
   no `sub`, 12h TTL. `requireAdmin` verifies that secret and asserts `role === "admin"`; it

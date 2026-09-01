@@ -4,11 +4,9 @@ import { cartItems, carts, products } from "../db/schema";
 import { EmptyCartError, NotFoundError } from "../errors";
 import { getDeliveryFee } from "../constants";
 
-// Cart is server-side, referenced by ID (backend/CLAUDE.md "Cart Handling") — every function
-// below operates on a cart_id, never on client/agent-submitted cart contents. Each human user
-// has exactly one active cart; getOrCreateActiveCartId is the only place that simplification
-// lives, so a future agent caller that manages carts by id directly slots in without changes
-// to addItem/updateItemQty/removeItem/getCartWithTotals.
+// Cart is server-side, referenced by id (backend/CLAUDE.md "Cart Handling") — every function
+// here takes a cart_id, never client- or agent-submitted contents. One active cart per user;
+// getOrCreateActiveCartId is the only place that assumption lives.
 
 export async function getOrCreateActiveCartId(userId: string) {
   const [existing] = await db

@@ -11,41 +11,28 @@ import { CART_MANDATE_TTL_MINUTES } from "../constants";
 import { ConflictError, NotFoundError } from "../errors";
 import { pgErrorCode, PG_UNIQUE_VIOLATION } from "../utils/db-error";
 
-// The Cart Mandate.
+// The Cart Mandate: a signed per-transaction record of what was agreed, separate from the
+// Reserve Pay token's standing authority. That one says "up to ₹500 over 30 days"; this says
+// "₹247 for exactly these six items, now".
 //
-// Root claude.md defines it as a signed `{cart_contents, total_amount, token_id, timestamp}`
-// record generated at checkout — the per-transaction proof of what was agreed, separate from the
-// Reserve Pay token's general standing authority. Where the Reserve Pay mandate says "you may
-// charge me up to ₹500 over the next 30 days", this says "you may charge me ₹247 for exactly
-// these six items, right now".
-//
-// It does two concrete jobs beyond the narrative one:
-//
-//   1. **Idempotency.** A consumed quote records the order it produced, so an LLM that retries
-//      place_order gets that same order back rather than buying the cart a second time.
-//   2. **Invalidation.** The cart fingerprint means a basket that changed after the customer
-//      approved it fails loudly instead of being charged at a total nobody agreed to.
-//
-// Lives in /services rather than the tool layer so the A2A and MCP adapters inherit it — per
-// backend/CLAUDE.md, business logic never lives in a caller.
+// Two concrete jobs: a consumed quote records the order it produced, which makes place_order
+// idempotent under an LLM retry; and the cart fingerprint makes a basket that moved after
+// approval fail loudly instead of being charged at a total nobody agreed to.
 
 type CartMandateRow = typeof cartMandates.$inferSelect;
 
 /**
- * Signing key for cart mandates.
- *
- * Derived from JWT_SECRET rather than being its own env var — one less thing to configure, and
- * the fixed label keeps it cryptographically separate from session tokens, so a cart mandate
- * signature can never be replayed as a session JWT or vice versa.
+ * Derived from JWT_SECRET rather than its own env var. The fixed label keeps it cryptographically
+ * separate, so a cart mandate signature can never be replayed as a session JWT or vice versa.
  */
 function signingKey() {
   return createHmac("sha256", env.JWT_SECRET).update("cart-mandate-v1").digest();
 }
 
 /**
- * Canonical serialisation of what was agreed. Field order is fixed and explicit — signing
- * `JSON.stringify(row)` would produce a different string whenever a column is added or the
- * driver reorders keys, silently invalidating every quote in flight.
+ * Canonical serialisation of what was agreed. Field order is fixed and explicit: signing
+ * `JSON.stringify(row)` would change whenever a column is added or the driver reorders keys,
+ * silently invalidating every quote in flight.
  */
 function canonicalPayload(input: {
   userId: string;
@@ -77,10 +64,8 @@ function sign(payload: string) {
 }
 
 /**
- * Fingerprint of the cart's contents — product ids, quantities and prices.
- *
- * Sorted by product id so an unrelated reordering of rows doesn't read as a change, and prices
- * are included so a catalog price move invalidates the quote too, not just an item swap.
+ * Fingerprint of product ids, quantities and prices. Sorted by product id so row reordering
+ * doesn't read as a change; prices included so a catalog price move invalidates the quote too.
  */
 export function fingerprintLines(lines: CartMandateLine[]) {
   const canonical = [...lines]
@@ -129,8 +114,7 @@ export async function createCartMandate(input: {
 }) {
   const expiresAt = new Date(Date.now() + CART_MANDATE_TTL_MINUTES * 60 * 1000);
 
-  // Only one quote may be open per user, so the previous one is retired rather than left to
-  // collide with the partial unique index.
+  // One open quote per user — retire the previous rather than collide with the partial index.
   await supersedeOpenQuotes(input.userId);
 
   const signature = sign(canonicalPayload({ ...input, expiresAt }));
@@ -176,13 +160,9 @@ export async function getCartMandate(userId: string, quoteId: string) {
 }
 
 /**
- * The user's one open quote, or null.
- *
- * Read-only and unlike getCartMandate it does not throw on absence, because both callers are
- * asking a question rather than acting on an id: the chat orchestrator tells the model whether a
- * quote is outstanding, and the confirm gate checks that the quote being confirmed is *this*
- * user's live one. Expiry is not evaluated here — that stays in place_order, which is where the
- * status transition belongs.
+ * The user's one open quote, or null. Unlike getCartMandate it does not throw on absence: both
+ * callers are asking a question, not acting on an id. Expiry is not evaluated here — that
+ * transition belongs to place_order.
  */
 export async function getOpenCartMandate(userId: string) {
   const [mandate] = await db

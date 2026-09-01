@@ -16,8 +16,7 @@ const buyerSelect = {
 
 type Buyer = { id: string; name: string; email: string; phone: string };
 
-// Same order+items+product shape the storefront returns (orderService.getOrderWithItems),
-// plus the buyer — admins are not scoped to a single user.
+// The storefront's order+items+product shape plus the buyer — admins are not scoped to a user.
 async function withDetail(orderId: string, buyer: Buyer) {
   const detail = await orderService.getOrderWithItems(orderId);
   return { ...detail, buyer };

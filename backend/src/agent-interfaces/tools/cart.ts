@@ -11,16 +11,12 @@ import {
 import { toAgentCart } from "./presenters";
 import { defineTool, toolError, type ToolContext } from "./types";
 
-// Cart tools.
-//
-// The first-party chat has its own route for these — web/lib/chat/protocol.ts routes cart writes
-// through the browser's cart store and tells the agent about them via clientState. These tools
-// exist because an external agent over A2A/MCP has no browser, and because Hard Rule #2 wants one
+// The storefront routes its own cart writes through the browser's cart store and reports them
+// via clientState. These tools exist for external agents, which have no browser, and to keep one
 // implementation rather than two that can drift.
 //
-// The mutators in cartService all return void, so every tool here re-reads the cart and returns
-// the whole thing — a model that just changed the cart almost always wants the new totals, and
-// making it call get_cart afterwards is a wasted round-trip.
+// cartService's mutators return void, so each tool re-reads and returns the whole cart — the
+// caller almost always wants the new totals, and a follow-up get_cart is a wasted round trip.
 
 async function currentCart(ctx: ToolContext) {
   const cartId = await cartService.getOrCreateActiveCartId(ctx.userId);
@@ -60,11 +56,9 @@ const addToCart = defineTool({
   input: addToCartSchema,
   readOnly: false,
   handler: async (ctx, input) => {
-    // Resolve to a product id and, in doing so, confirm the product is real and sellable.
-    // cartService.addItem only checks that the product isn't archived — it never reads inStock
-    // and never validates quantity, because the REST route's Zod schema did both and agents
-    // don't pass through it. reservePayService.createMandate set this precedent of re-asserting
-    // limits for non-route callers.
+    // Also confirms the product is real and sellable: cartService.addItem only checks it isn't
+    // archived — the REST route's Zod schema did the inStock and quantity checks, and agents
+    // don't pass through it.
     const product = input.productId
       ? await productService.getProductById(input.productId)
       : await productService.getProductBySlug(input.slug!);
@@ -77,7 +71,7 @@ const addToCart = defineTool({
 
     const cartId = await cartService.getOrCreateActiveCartId(ctx.userId);
 
-    // Enforced against the resulting line, not the increment, since qty is additive.
+    // Against the resulting line, not the increment, since qty is additive.
     const existing = await cartService.getCartWithTotals(cartId);
     const currentQty =
       existing.items.find((item) => item.product.id === product.id)?.qty ?? 0;
@@ -114,9 +108,8 @@ const updateCartItem = defineTool({
   handler: async (ctx, input) => {
     const cartId = await cartService.getOrCreateActiveCartId(ctx.userId);
 
-    // The schema already floors qty at 1. cartService.updateItemQty deletes the row on qty <= 0,
-    // which is a surprising thing for a tool named "update" to do — remove_from_cart says what it
-    // means, and a model choosing between them will pick correctly.
+    // The schema floors qty at 1. cartService.updateItemQty deletes the row at qty <= 0, which
+    // is surprising for a tool named "update" — remove_from_cart says what it means.
     await cartService.updateItemQty(cartId, input.itemId, input.qty);
     await auditCart(ctx, "agent.cart.update_item", {
       itemId: input.itemId,

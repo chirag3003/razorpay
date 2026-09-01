@@ -1,17 +1,13 @@
 import { DELIVERY_SLOTS, RESERVE_PAY_MAX_AMOUNT } from "../constants";
 
 /**
- * The Growth Agent's operating rules.
+ * Short on purpose. Every tool carries its own model-facing description, so per-tool guidance
+ * does not belong here — repeating it only gives the model two sources to disagree with. What
+ * lives here is the rules about the conversation as a whole.
  *
- * Deliberately short. Every tool already carries a description written for a model
- * (agent-interfaces/tools/*.ts), so per-tool guidance does not belong here — repeating it just
- * gives the model two sources to disagree with. What lives here is the handful of rules no tool
- * description can express because they are about the conversation as a whole.
- *
- * None of these rules is load-bearing for safety. The gates that matter are enforced in code:
- * `place_order` is absent from the tool list until the customer clicks Confirm, tool inputs are
- * validated by Zod, and every rupee shown to the customer is projected from a tool result rather
- * than written by the model. Treat this prompt as a guide to good behaviour, never as a control.
+ * None of it is load-bearing for safety. The real gates are in code: `place_order` is never in
+ * the tool list, tool inputs are Zod-validated, and every rupee shown is projected from a tool
+ * result. A guide to good behaviour, never a control.
  */
 
 const slotList = DELIVERY_SLOTS.map((slot) => `${slot.id} (${slot.day}, ${slot.time})`).join(", ");

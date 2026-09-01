@@ -4,15 +4,12 @@ import { runTool } from "../agent-interfaces/tools/registry";
 import type { ToolContext, ToolResult } from "../agent-interfaces/tools/types";
 
 /**
- * The model ↔ tool loop. ~180 lines, no framework.
+ * The model/tool loop, no framework. Owns three things: talking to OpenRouter, reassembling a
+ * streamed response, running the tools the model asked for.
  *
- * It owns exactly three things: talking to OpenRouter, reassembling a streamed response, and
- * running the tools the model asked for. It does not know what a widget is, does not touch the
- * database, and does not decide which tools exist — the caller passes those in. That separation is
- * what lets `chatService` enforce the `place_order` gate: the loop can only ever call a tool that
- * was handed to it.
- *
- * Nothing here is Claude-specific. Swapping to GPT or Llama is `OPENROUTER_MODEL`.
+ * It does not know what a widget is, does not touch the database, and does not decide which tools
+ * exist — the caller passes those in. That is what lets chatService enforce the `place_order`
+ * gate: the loop can only call a tool handed to it.
  */
 
 /** Enough rounds for search → add → status → prepare, with slack. Prevents a runaway tool loop. */
@@ -40,12 +37,9 @@ function isEventStream(
 }
 
 /**
- * Reassembles one streamed completion.
- *
- * Tool-call fragments arrive spread across chunks and keyed by `index`, not by id — the id and
- * name usually land in the first fragment and the JSON arguments dribble in after. Accumulating
- * by index is the whole trick, and getting it wrong shows up as a model that "randomly" fails to
- * call tools on long arguments.
+ * Reassembles one streamed completion. Tool-call fragments arrive across chunks keyed by `index`,
+ * not by id — the id and name land in the first fragment, the JSON arguments after. Accumulating
+ * by anything else shows up as a model that randomly fails to call tools on long arguments.
  */
 async function* streamOnce(
   messages: ChatMessages[],
@@ -56,12 +50,12 @@ async function* streamOnce(
     {
       chatRequest: {
         model: modelChain[0],
-        // OpenRouter fails over server-side through this list, so a dead primary costs no extra
-        // round trip from us. This is the entirety of our provider-resilience story.
+        // OpenRouter fails over server-side through this list — a dead primary costs no extra
+        // round trip.
         models: modelChain.length > 1 ? modelChain : undefined,
         messages,
         tools: tools.length > 0 ? tools : undefined,
-        // Sequential tool calls keep the audit trail and cart mutations in a deterministic order.
+        // Sequential calls keep the audit trail and cart mutations deterministically ordered.
         parallelToolCalls: false,
         temperature: 0.3,
         maxTokens: 1_500,
@@ -120,11 +114,9 @@ async function* streamOnce(
 }
 
 /**
- * Runs a full turn: model, tools, model again, until the model stops asking for tools.
- *
- * Yields as it goes so the caller can stream to the customer rather than waiting for the whole
- * turn. Never throws — a failure becomes a terminal `failed` event, because the caller is holding
- * an open SSE stream and an exception there would kill it mid-message.
+ * Runs a full turn: model, tools, model again, until the model stops asking for tools. Yields as
+ * it goes so the caller can stream. Never throws — the caller holds an open SSE stream, so a
+ * failure becomes a terminal `failed` event rather than an exception that kills it mid-message.
  */
 export async function* runAgentTurn(input: {
   ctx: ToolContext;
@@ -171,8 +163,8 @@ export async function* runAgentTurn(input: {
       if (result.toolCalls.length === 0) return;
 
       for (const call of result.toolCalls) {
-        // A model can emit malformed JSON, especially when a stream is truncated. Treat it as a
-        // tool failure it can recover from rather than as an exception that ends the turn.
+        // Malformed JSON is common on a truncated stream. Treat it as a recoverable tool
+        // failure rather than an exception that ends the turn.
         let args: unknown = {};
         let parseError: string | null = null;
         try {

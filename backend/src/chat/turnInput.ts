@@ -1,20 +1,14 @@
 import type { ClientTurnInput, WidgetActionInput } from "../schemas/chat.schema";
 
 /**
- * Client turn -> the text the model actually reads.
+ * Client turn -> the text the model reads. Every turn is flattened into one user message rather
+ * than giving the model a structured side-band it would have to be taught to read.
  *
- * A widget tap is not a sentence, but the model only understands sentences. Rather than giving
- * the model a second input channel — a structured "the user clicked X" side-band it would have to
- * be taught to read — every turn is flattened into one user message. One code path, one place to
- * change when a widget is added.
+ * Widget taps are bracketed and marked as UI events so the model treats them as facts about what
+ * happened, not as words the customer typed — otherwise it replies "you said address.select".
  *
- * Widget taps are wrapped in brackets and marked as UI events so the model treats them as facts
- * about what happened rather than as words the customer typed. It matters for tone: it should not
- * reply "you said address.select".
- *
- * Note what is *not* here: `review.confirm`. That action never reaches the model as text, because
- * it is not a request — it is the authorisation, and chatService consumes it by unlocking
- * `place_order` for exactly one turn. See services/chatService.ts.
+ * `review.confirm` never reaches the model at all: chatService intercepts that turn and calls
+ * place_order directly. See services/chatService.ts.
  */
 
 function describeAction(action: WidgetActionInput): string {
@@ -50,7 +44,7 @@ function describeAction(action: WidgetActionInput): string {
       return `[UI] The customer wants to change the ${action.target} on the order they were reviewing. That quote is no longer valid — help them change it, then call prepare_order again.`;
 
     case "review.confirm":
-      // Handled structurally by chatService, not narrated. Included for exhaustiveness.
+      // Unreachable: chatService intercepts a confirm turn before this runs. Here for exhaustiveness.
       return "[UI] The customer confirmed the order. Place it now with place_order using the open quoteId.";
 
     case "reserve_pay.choose_amount":

@@ -21,11 +21,9 @@ export type UpiApp = keyof typeof APP_PREFIXES;
 export type UpiIntentLinks = { generic: string } & Record<UpiApp, string>;
 
 /**
- * Expands a generic `upi://mandate` URL into one link per supported UPI app.
- *
- * Returns `null` for anything that isn't a generic mandate intent URL rather than guessing —
- * Razorpay's response shape is ours to read, not to assume, and a silently mangled payment
- * deep link is worse than no per-app links at all. Callers fall back to the raw URL.
+ * Expands a generic `upi://mandate` URL into one link per supported UPI app. Returns null for
+ * anything else rather than guessing — a mangled payment deep link is worse than no per-app
+ * links. Callers fall back to the raw URL.
  */
 export function buildUpiIntentLinks(intentUrl: string): UpiIntentLinks | null {
   if (!intentUrl.startsWith(GENERIC_PREFIX)) return null;

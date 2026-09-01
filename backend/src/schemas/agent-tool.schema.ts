@@ -7,18 +7,15 @@ import {
   RESERVE_PAY_MAX_EXPIRY_DAYS,
 } from "../constants";
 
-// Zod inputs for the agent tools. Leaf module by convention — imports only constants, so it can
-// be pulled in from anywhere (tools, and later the A2A/MCP adapters) with no cycle risk.
+// Zod inputs for the agent tools. Leaf module — imports only constants, so it is importable
+// anywhere with no cycle risk.
 //
-// These double as the tools' JSON schemas via z.toJSONSchema, so `.describe()` here is not a
-// comment: it becomes the parameter documentation a model reads before calling. Write it for the
-// model.
+// These double as the tools' JSON schemas via z.toJSONSchema, so `.describe()` is not a comment:
+// it is the parameter documentation a model reads before calling. Write it for the model.
 //
-// Note these are shaped differently from product-query.schema.ts, which parses an HTTP query
-// string: `category` there is a comma-joined string that transforms to an array, and `inStock` is
-// a "true"/"false" string enum. Piping those straight to a model would advertise string
-// parameters where a model naturally sends arrays and booleans. Tools take the natural types and
-// the handler adapts.
+// Shaped differently from product-query.schema.ts, which parses an HTTP query string (`category`
+// a comma-joined string, `inStock` a "true"/"false" enum). Tools take the natural types a model
+// sends — arrays and booleans — and the handler adapts.
 
 const slotIds = DELIVERY_SLOTS.map((slot) => slot.id) as [string, ...string[]];
 
@@ -69,6 +66,37 @@ export const searchProductsSchema = z.object({
     .max(20)
     .default(6)
     .describe("How many products to return. Keep it small — chat shows at most 6."),
+});
+
+// The filters searchQueryBuilder.ts asks the LLM to derive from free text: a subset of
+// searchProductsSchema minus q/limit/inStockOnly, which the caller supplies directly. Shared so
+// the tool schema and the LLM's forced JSON output cannot drift.
+export const searchFiltersSchema = z.object({
+  category: z
+    .array(z.string())
+    .optional()
+    .describe("Category slugs, from the provided list only. Omit if nothing clearly matches."),
+  tag: z
+    .array(z.enum(["bestseller", "new", "organic", "seasonal"]))
+    .optional()
+    .describe("Only from this exact vocabulary. Omit if the request doesn't imply any."),
+  minPrice: z.number().int().nonnegative().max(MAX_PRODUCT_PRICE).optional(),
+  maxPrice: z.number().int().positive().max(MAX_PRODUCT_PRICE).optional(),
+  sort: z.enum(["popularity", "price-asc", "price-desc", "rating", "newest"]).optional(),
+});
+
+export type SearchFilters = z.infer<typeof searchFiltersSchema>;
+
+export const searchProductsNlSchema = z.object({
+  query: z
+    .string()
+    .trim()
+    .min(1)
+    .describe(
+      "A free-text description of what the customer wants, in their own words (e.g. " +
+        '"something sweet and cold for a party"). An LLM turns this into structured catalog ' +
+        "filters — use search_products instead if you already know exact keywords/category/tags."
+    ),
 });
 
 export const getProductSchema = z.object({

@@ -111,8 +111,8 @@ export async function update(id: string, input: UpdateCategoryInput) {
   return updated;
 }
 
-// Categories are hard-delete only. products.categoryId FK is onDelete: "restrict", so a
-// category that still has products raises Postgres 23503 -> surfaced as 409.
+// Hard-delete only. products.categoryId is onDelete "restrict", so a category with products
+// raises 23503, surfaced as 409.
 export async function remove(id: string) {
   await categoryService.getCategoryById(id);
 

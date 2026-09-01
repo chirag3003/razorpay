@@ -1,15 +1,11 @@
 import type { z } from "zod";
 
 /**
- * Who is acting, and on whose behalf.
+ * Who is acting, and on whose behalf. Authentication happens above this layer; tools trust the
+ * userId handed in, as a route handler trusts `c.get("userId")` after requireAuth.
  *
- * Authentication happens *above* this layer — the AI layer resolves the session and hands the
- * userId in. Tools trust it, exactly as a route handler trusts `c.get("userId")` after
- * requireAuth has run.
- *
- * `actor` is separate from `userId` on purpose. Today they usually name the same person, but when
- * agent tokens land, `actor` becomes `{ type: "agent", id: <token id> }` acting on a user's data —
- * and every audit row written from `ctx.actor` starts attributing correctly with no tool change.
+ * `actor` is separate from `userId` because they differ on the MCP surface, where an agent acts
+ * on a user's data — audit rows written from `ctx.actor` attribute correctly either way.
  */
 export type ToolContext = {
   actor: { type: "user" | "agent"; id: string };
@@ -18,11 +14,8 @@ export type ToolContext = {
   conversationId?: string;
 };
 
-/**
- * Stable failure codes. Named to line up with the frontend's `ChatErrorCode` union
- * (web/lib/chat/protocol.ts) wherever the two overlap, so the AI layer's mapping from a tool
- * failure to a rendered error widget is mechanical rather than a judgement call.
- */
+// Named to line up with the frontend's ChatErrorCode union wherever the two overlap, so
+// partMapper's failure -> widget mapping is mechanical rather than a judgement call.
 export const TOOL_ERROR_CODES = [
   "invalid_input",
   "not_found",
@@ -65,9 +58,8 @@ export type ToolDefinition<S extends z.ZodType = z.ZodType> = {
   description: string;
   input: S;
   /**
-   * Root Hard Rule #5: discovery is open, transacting is not. Today every tool receives a userId
-   * regardless; this flag is what the future agent-token middleware will gate on, and it keeps
-   * the read/write split visible in one place rather than inferred from tool names.
+   * Hard Rule #5: discovery is open, transacting is not. Nothing gates on this yet — it keeps the
+   * read/write split declared in one place rather than inferred from tool names.
    */
   readOnly: boolean;
   handler: (ctx: ToolContext, input: z.output<S>) => Promise<unknown>;
@@ -79,12 +71,11 @@ export function defineTool<S extends z.ZodType>(def: ToolDefinition<S>): ToolDef
 }
 
 /**
- * Thrown by a handler that already knows its own tool-level failure code, for the cases the
- * DomainError hierarchy doesn't cover (an expired quote, an out-of-stock product).
+ * Thrown by a handler that already knows its own failure code, for cases the DomainError
+ * hierarchy doesn't cover (expired quote, out-of-stock product).
  *
- * Lives here rather than in registry.ts so the tool modules don't have to import the registry
- * that imports them — that cycle happens to work under ESM, since the reference is inside a
- * handler body, but it's a trap for the next person to add a top-level call.
+ * Here rather than in registry.ts so tool modules don't import the registry that imports them.
+ * That cycle works under ESM while the reference is inside a handler body, but it is a trap.
  */
 export class ToolFailure extends Error {
   constructor(readonly failure: ToolError) {

@@ -6,9 +6,8 @@ import { getOrderSchema, listOrdersSchema } from "../../schemas/agent-tool.schem
 import { toAgentOrder, toAgentOrderSummary } from "./presenters";
 import { defineTool, toolError } from "./types";
 
-// Order tools are read-only by design. Nothing here can cancel an order, change its status, or
-// issue a refund — those stay admin actions. An agent can look an order up and explain it, and
-// that is the whole surface.
+// Read-only by design: nothing here cancels an order, changes its status, or issues a refund.
+// Those stay admin actions.
 
 const listOrders = defineTool({
   name: "list_orders",
@@ -18,9 +17,9 @@ const listOrders = defineTool({
   input: listOrdersSchema,
   readOnly: true,
   handler: async (ctx, input) => {
-    // orderService.listOrders hydrates every order with a join per row and has no limit of its
-    // own, so the slice happens after the fact. The schema caps `limit` at 10 to bound that;
-    // worth pushing the limit down into the service if order history ever gets long.
+    // orderService.listOrders has no limit and hydrates every order, so the slice happens after
+    // the fact; the schema caps `limit` at 10 to bound it. Push the limit into the service if
+    // order history ever gets long.
     const all = await orderService.listOrders(ctx.userId);
 
     return {
@@ -41,9 +40,8 @@ const getOrder = defineTool({
     let orderId = input.orderId;
 
     if (!orderId) {
-      // Resolve the human-facing number to an id. Deliberately not filtered by user here —
-      // getOrderById below does the ownership check, and it answers "not found" rather than
-      // "forbidden" so this can't be used to probe whether an order number exists.
+      // Not filtered by user here: getOrderById below does the ownership check, and answers
+      // "not found" rather than "forbidden" so this cannot probe whether a number exists.
       const [match] = await db
         .select({ id: orders.id })
         .from(orders)

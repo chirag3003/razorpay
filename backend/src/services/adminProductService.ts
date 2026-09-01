@@ -16,8 +16,7 @@ import type {
   UpdateProductInput,
 } from "../schemas/admin-product.schema";
 
-// Like productService's private `productWithCategory` select, but also exposes `archivedAt`
-// (the admin surface needs to see archived rows).
+// productService's `productWithCategory` plus `archivedAt` — the admin surface sees archived rows.
 const adminProductSelect = {
   id: products.id,
   slug: products.slug,
@@ -48,8 +47,8 @@ async function getAdminProductById(id: string) {
   return product;
 }
 
-// First free slug of the form base, base-2, base-3, ... (mirrors userService's
-// pre-check-then-insert approach; the DB unique index is the real backstop, caught below).
+// First free slug of the form base, base-2, base-3. The unique index is the real backstop,
+// caught below.
 async function uniqueProductSlug(name: string) {
   const base = slugify(name) || "product";
   let candidate = base;
@@ -192,8 +191,8 @@ export async function update(id: string, input: UpdateProductInput) {
   return product;
 }
 
-// Hard-delete if nothing references the product; if a past order does (order_items FK is
-// onDelete: "restrict" -> Postgres 23503), fall back to archiving it.
+// Hard-delete unless a past order references it (order_items FK is onDelete "restrict"), in
+// which case archive instead.
 export async function remove(id: string) {
   await getAdminProductById(id);
 

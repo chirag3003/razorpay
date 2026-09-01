@@ -14,8 +14,8 @@ import { orders } from "./orders";
 import { reservePayMandates } from "./reserve-pay";
 import { CART_MANDATE_STATUSES } from "../../constants";
 
-// A line as it stood when the quote was issued. Prices are frozen here so the record shows what
-// was actually agreed, not what the catalog says today.
+// A line as it stood at issue. Prices frozen, so the record shows what was agreed rather than
+// what the catalog says today.
 export type CartMandateLine = {
   itemId: string;
   productId: string;
@@ -32,18 +32,13 @@ export type CartMandateSnapshot = {
   total: number;
 };
 
-// The Cart Mandate: a signed, per-transaction record of exactly what an agent proposed to buy,
-// issued by prepare_order and spent by place_order.
+// A signed, per-transaction record of what an agent proposed to buy: issued by prepare_order,
+// spent by place_order. Distinct from the Reserve Pay mandate, which is the standing authority —
+// this is the specific one, and it makes an agent purchase auditable rather than "a debit
+// happened". A consumed quote carries the order it produced, which is what makes place_order
+// idempotent under a retry.
 //
-// Distinct from the Reserve Pay mandate, which is the customer's *general* standing authority to
-// be charged. This is the specific one — this cart, this total, this moment — and it is what
-// makes an agent purchase auditable after the fact rather than just "a debit happened".
-//
-// It also does the practical work of making order placement idempotent: a consumed quote carries
-// the order it produced, so an LLM retrying place_order gets that same order back instead of
-// buying the cart twice.
-//
-// Money here is whole rupees, matching carts/orders. Only the Reserve Pay tables use paise.
+// Whole rupees, matching carts/orders. Only the Reserve Pay tables use paise.
 export const cartMandates = pgTable(
   "cart_mandates",
   {
@@ -64,12 +59,10 @@ export const cartMandates = pgTable(
     // checkout writes, so an agent order is indistinguishable from a web one downstream.
     deliverySlot: text("delivery_slot").notNull(),
     snapshot: jsonb("snapshot").$type<CartMandateSnapshot>().notNull(),
-    // Hash of the cart contents at issue time. Compared again immediately before charging, so a
-    // cart that moved underneath the quote invalidates it instead of silently charging a
-    // different basket than the customer approved.
+    // Compared again immediately before charging, so a cart that moved under the quote
+    // invalidates it rather than silently charging a different basket.
     cartFingerprint: text("cart_fingerprint").notNull(),
-    // HMAC over the canonical snapshot. Makes the record tamper-evident, which is the point of
-    // calling it a mandate rather than a cache entry.
+    // HMAC over the canonical snapshot — what makes this a mandate rather than a cache entry.
     signature: text("signature").notNull(),
     status: text("status").notNull().default("open"),
     orderId: uuid("order_id").references(() => orders.id, { onDelete: "set null" }),
@@ -85,10 +78,8 @@ export const cartMandates = pgTable(
         sql`, `
       )})`
     ),
-    // At most one open quote per user. carts.user_id is already unique, so per-user and per-cart
-    // are the same constraint — keyed on user because that is what the tool layer has in hand.
-    // prepare_order supersedes any prior open quote rather than colliding with it; this index is
-    // the backstop for two concurrent prepare calls.
+    // At most one open quote per user. prepare_order supersedes any prior open quote rather than
+    // colliding; this index is the backstop for two concurrent prepare calls.
     uniqueIndex("cart_mandates_one_open_per_user")
       .on(t.userId)
       .where(sql`${t.status} = 'open'`),

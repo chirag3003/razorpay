@@ -13,8 +13,8 @@ import { products } from "./products";
 import type { CheckoutSnapshot } from "./carts";
 import { ORDER_STATUSES } from "../../constants";
 
-// Immutable snapshot of the address at the time of the order — must survive the address
-// being edited or deleted later, so it's stored inline rather than as a live foreign key.
+// Immutable snapshot: stored inline rather than as a live FK so it survives the address being
+// edited or deleted later.
 export type OrderAddress = CheckoutSnapshot["address"];
 
 export const orders = pgTable("orders", {
@@ -32,9 +32,8 @@ export const orders = pgTable("orders", {
   deliveryFee: integer("delivery_fee").notNull(),
   discount: integer("discount").notNull(),
   total: integer("total").notNull(),
-  // Fulfillment status — always starts "placed"; an order row only exists once payment
-  // is confirmed, so there is no "pending payment" status to model here. Constrained to
-  // ORDER_STATUSES via the CHECK below (and by the Zod enum on PATCH /api/admin/orders/:id/status).
+  // Always starts "placed" — a row exists only once payment is confirmed, so there is no
+  // "pending payment" state to model. Constrained to ORDER_STATUSES by the CHECK below.
   status: text("status").notNull().default("placed"),
   placedAt: timestamp("placed_at").notNull().defaultNow(),
 }, (t) => [

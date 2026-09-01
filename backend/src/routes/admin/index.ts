@@ -7,8 +7,8 @@ import { adminProductRoutes } from "./products";
 import { adminCategoryRoutes } from "./categories";
 import { adminUserRoutes } from "./users";
 
-// Mounted at /api/admin in server.ts. Every sub-router except auth applies requireAdmin
-// itself (mirrors how orderRoutes/addressRoutes apply requireAuth); /login stays open.
+// Mounted at /api/admin. Every sub-router except auth applies requireAdmin itself; /login is the
+// one open route.
 export const adminRoutes = new Hono<AdminEnv>();
 
 adminRoutes.route("/", adminAuthRoutes);

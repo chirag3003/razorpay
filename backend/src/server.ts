@@ -12,16 +12,16 @@ import { orderRoutes } from "./routes/orders";
 import { reservePayRoutes } from "./routes/reserve-pay";
 import { chatRoutes } from "./routes/chat";
 import { adminRoutes } from "./routes/admin";
+import { oauthRoutes } from "./routes/oauth";
+import { mcpRoutes } from "./routes/mcp";
 import { razorpayWebhook } from "./webhooks/razorpay";
 import type { AppEnv } from "./types";
 import { logger } from "hono/logger";
 
 const app = new Hono<AppEnv>();
 
-// Logging — log all requests to the console.
 app.use(logger())
 
-// CORS — allow all origins, and allow all headers.
 app.use(
   "*",
   cors({
@@ -31,10 +31,8 @@ app.use(
   })
 );
 
-// Root — just a simple health check.
 app.get("/", (c) => c.json({ status: "ok" }));
 
-// API routes.
 app.route("/api/auth", authRoutes);
 app.route("/api/categories", categoryRoutes);
 app.route("/api/products", productRoutes);
@@ -43,14 +41,19 @@ app.route("/api/cart", cartRoutes);
 app.route("/api/orders", orderRoutes);
 app.route("/api/reserve-pay", reservePayRoutes);
 
-// Storefront chat agent — SSE, streams the ServerEvent union in web/lib/chat/protocol.ts.
+// SSE, streaming the ServerEvent union in web/lib/chat/protocol.ts.
 app.route("/api/chat", chatRoutes);
 
-// Admin dashboard surface — its own auth (POST /api/admin/login + requireAdmin), separate
-// from the human-session JWT above.
+// Its own auth (POST /api/admin/login + requireAdmin), separate from the human-session JWT.
 app.route("/api/admin", adminRoutes);
 
-// Public, signature-verified — not under /api since it's not called by the storefront.
+app.route("/api/mcp", mcpRoutes);
+
+// Mounted at root: oauthRoutes defines its own full paths (.well-known/*, /oauth/*, and the
+// human-authenticated /api/oauth/* pair).
+app.route("/", oauthRoutes);
+
+// Public, signature-verified. Not under /api — the storefront never calls it.
 app.route("/webhooks/razorpay", razorpayWebhook);
 
 app.onError((err, c) => {
@@ -67,8 +70,7 @@ app.onError((err, c) => {
 
 console.log(`backend listening on http://localhost:${env.PORT}`);
 
-// Bun's own server config export — `bun src/server.ts` (and `bun --watch`) start the server
-// from this without needing an explicit Bun.serve() call.
+// Bun's server-config export — `bun src/server.ts` starts from this, no Bun.serve() call needed.
 export default {
   port: env.PORT,
   fetch: app.fetch,

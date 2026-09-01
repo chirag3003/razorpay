@@ -16,14 +16,11 @@ import {
   RESERVE_PAY_DEBIT_STATUSES,
 } from "../../constants";
 
-// UPI Reserve Pay (single block, multiple debit). The customer approves one block in their UPI
-// app; we then debit against it server-to-server, with no PIN and no client involvement. This
-// is the rail every AI-initiated payment runs on (root claude.md).
+// UPI Reserve Pay (single block, multiple debit) — the rail every AI-initiated payment runs on.
 //
-// Money here is in PAISE, unlike products/carts/orders which are whole rupees. These two tables
-// mirror Razorpay entities field-for-field and are reconciled against Razorpay's own values, so
-// they carry Razorpay's unit. The `_paise` suffix is load-bearing — never add a bare `amount`
-// column to either table.
+// Money here is PAISE, unlike products/carts/orders. These tables mirror Razorpay entities
+// field-for-field and reconcile against Razorpay's values, so they carry Razorpay's unit. The
+// `_paise` suffix is load-bearing — never add a bare `amount` column to either table.
 export const reservePayMandates = pgTable(
   "reserve_pay_mandates",
   {
@@ -32,27 +29,25 @@ export const reservePayMandates = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     razorpayCustomerId: text("razorpay_customer_id").notNull(),
-    // The authorisation order/payment — the one the customer approves. Distinct from the order
-    // created per debit later (those live in reserve_pay_debits). Nullable because the row is
-    // inserted *before* Razorpay is called: the insert is what atomically claims this user's
-    // one live-mandate slot, so a lost race fails before any funds are blocked.
+    // The authorisation order/payment the customer approves — distinct from the per-debit orders
+    // in reserve_pay_debits. Nullable because the row is inserted before Razorpay is called: that
+    // insert is the atomic slot claim, so a lost race fails before any funds are blocked.
     razorpayOrderId: text("razorpay_order_id").unique(),
     razorpayPaymentId: text("razorpay_payment_id"),
     // Null until the customer approves in their UPI app; this is the key every debit references.
     razorpayTokenId: text("razorpay_token_id").unique(),
     status: text("status").notNull().default("pending"),
-    // token.max_amount — the per-transaction ceiling. For Reserve Pay this equals the block
-    // amount, so it doubles as "what we asked to block" before Razorpay confirms the real figure.
+    // token.max_amount, the per-transaction ceiling. Equals the block amount for Reserve Pay, so
+    // it doubles as the requested figure before Razorpay confirms the real one.
     maxAmountPaise: integer("max_amount_paise").notNull(),
     // Mirrored from the token's recurring_details once confirmed. Razorpay is the source of
-    // truth for both — reservePayService bumps amountDebitedPaise optimistically on each debit
-    // and syncMandate corrects it.
+    // truth; amountDebitedPaise is bumped optimistically per debit and syncMandate corrects it.
     amountBlockedPaise: integer("amount_blocked_paise").notNull().default(0),
     amountDebitedPaise: integer("amount_debited_paise").notNull().default(0),
     vpa: text("vpa"),
     failureReason: text("failure_reason"),
-    // The `upi://mandate` deep link from the authorisation payment. Stored so the status
-    // endpoint can hand it back — a customer who closed the app mid-approval needs it again.
+    // Stored so the status endpoint can hand it back — a customer who closed the app
+    // mid-approval needs the link again.
     intentUrl: text("intent_url"),
     expiresAt: timestamp("expires_at").notNull(),
     confirmedAt: timestamp("confirmed_at"),
@@ -67,10 +62,9 @@ export const reservePayMandates = pgTable(
         sql`, `
       )})`
     ),
-    // One live mandate per user, enforced in the database rather than only in the service — a
-    // second concurrent POST /api/reserve-pay/mandates would otherwise race past the service's
-    // pre-check and block the customer's funds twice. Terminal rows (revoked/expired/failed/
-    // exhausted) are excluded so history accumulates freely.
+    // One live mandate per user, enforced in the database: a second concurrent create would
+    // otherwise race past the service's pre-check and block the customer's funds twice. Terminal
+    // rows are excluded so history accumulates freely.
     uniqueIndex("reserve_pay_mandates_one_live_per_user")
       .on(t.userId)
       .where(
@@ -82,9 +76,8 @@ export const reservePayMandates = pgTable(
   ]
 );
 
-// One row per debit attempt, successful or not — the reconciliation ledger against Razorpay and
-// the Recovery Agent's future input. A gateway rejection is a row here with the error code, not
-// a dropped exception.
+// One row per debit attempt, successful or not — the reconciliation ledger against Razorpay. A
+// gateway rejection is a row with the error code, not a dropped exception.
 export const reservePayDebits = pgTable(
   "reserve_pay_debits",
   {
@@ -92,9 +85,8 @@ export const reservePayDebits = pgTable(
     mandateId: uuid("mandate_id")
       .notNull()
       .references(() => reservePayMandates.id, { onDelete: "restrict" }),
-    // Back-filled once the debit has produced a storefront order. Null for a bare debit (the
-    // /mandates/:id/debit test harness) and for the window between a successful charge and the
-    // order row existing.
+    // Back-filled once the debit produces an order. Null for a bare test-harness debit, and for
+    // the window between a successful charge and the order row existing.
     orderId: uuid("order_id").references(() => orders.id, { onDelete: "set null" }),
     razorpayOrderId: text("razorpay_order_id").notNull().unique(),
     razorpayPaymentId: text("razorpay_payment_id"),

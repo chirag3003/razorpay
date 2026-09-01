@@ -3,10 +3,8 @@ import { UnauthorizedError } from "../errors";
 import { verifyToken } from "../services/userService";
 import type { AppEnv } from "../types";
 
-// Human session auth for REST routes — verifies the Authorization: Bearer <jwt> header issued
-// by userService.issueToken and sets userId on context. Root Hard Rule #5: "discovery is open,
-// transacting is not" — this middleware is applied to every route except catalog browse and
-// the Razorpay webhook.
+// Human session auth: verifies the bearer JWT from userService.issueToken and sets userId.
+// Applied to every route except catalog browse and the Razorpay webhook (Hard Rule #5).
 export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   const header = c.req.header("Authorization");
   if (!header?.startsWith("Bearer ")) {

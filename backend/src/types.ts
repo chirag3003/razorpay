@@ -1,13 +1,11 @@
-// Shared Hono context typing — every route/middleware file uses this so `c.get("userId")` is
-// typed consistently across the app.
+// Shared Hono context typing, so `c.get("userId")` is typed the same everywhere.
 export type AppEnv = {
   Variables: {
     userId: string;
   };
 };
 
-// Separate context typing for the /api/admin routes — admin auth is its own token/middleware
-// (middleware/adminAuth.ts), never mixed with the human-session `userId` above.
+// /api/admin routes only. Admin auth is its own token/middleware and never sets `userId`.
 export type AdminEnv = {
   Variables: {
     admin: true;

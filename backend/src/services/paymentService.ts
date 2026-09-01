@@ -5,19 +5,16 @@ import { env } from "../config/env";
 import { CURRENCY } from "../constants";
 import { PaymentGatewayError } from "../errors";
 
-// The only place rupees->paise conversion happens — everything else in the app (products,
-// carts, orders) is priced in whole rupees, matching the storefront's own data. Exported for
-// reservePayService, whose tables store paise because they mirror Razorpay entities directly.
+// The only rupees->paise conversion. Everything else (products, carts, orders) is whole rupees;
+// the Reserve Pay tables store paise because they mirror Razorpay entities directly.
 export function toPaise(amountInRupees: number) {
   return Math.round(amountInRupees * 100);
 }
 
 /**
- * Pulls Razorpay's own error fields off a thrown SDK error.
- *
- * Reserve Pay needs more than a message: a declined debit is persisted to reserve_pay_debits
- * with the gateway's `code`/`description` so the failure is a queryable row (and the Recovery
- * Agent's future input) rather than a swallowed exception.
+ * Razorpay's own error fields off a thrown SDK error. A declined debit is persisted to
+ * reserve_pay_debits with the gateway's code/description, so the failure is a queryable row
+ * rather than a swallowed exception.
  */
 export function parseGatewayError(err: unknown) {
   const error = (err as { error?: { code?: string; description?: string; reason?: string } })
@@ -34,11 +31,9 @@ function gatewayError(err: unknown, fallback: string) {
 }
 
 /**
- * Best-effort human-readable reason for a gateway failure, for persisting to a row.
- *
- * Handles both shapes that reach a caller: a raw Razorpay SDK error (fields under `.error`) and
- * one this module already wrapped in a PaymentGatewayError (reason on `.message`). Reading only
- * the first shape silently stores null for every wrapped failure.
+ * Handles both shapes that reach a caller: a raw SDK error (fields under `.error`) and one this
+ * module already wrapped in a PaymentGatewayError (reason on `.message`). Reading only the first
+ * stores null for every wrapped failure.
  */
 export function describeGatewayError(err: unknown) {
   const parsed = parseGatewayError(err);
@@ -92,16 +87,13 @@ export function verifyWebhookSignature(rawBody: string, signature: string) {
 
 // --- UPI Reserve Pay (SBMD) gateway calls --------------------------------------------------
 //
-// These four calls go through `razorpay.api` — the SDK's own generic HTTP client — rather than
-// its resource methods, because the resource methods' types cannot express an SBMD request:
-// `orders.create`'s token type (Tokens.RazorpayTokenEmandate) has no `type` field, so
-// `single_block_multiple_debit` won't typecheck, and `payments.createPaymentJson` is typed for
-// the card flow (it demands `save`, `card`, `ip`, `user_agent`). `razorpay.api.post<Req, Res>`
-// is public and generic, prefixes `/v1`, and carries the same basic auth — so we get honest
-// hand-written types for these bodies instead of casting through a signature that is wrong.
+// These go through `razorpay.api`, the SDK's generic HTTP client, rather than its resource
+// methods: `orders.create`'s token type has no `type` field so `single_block_multiple_debit`
+// won't typecheck, and `payments.createPaymentJson` is typed for the card flow (demanding `save`,
+// `card`, `ip`, `user_agent`). `razorpay.api.post<Req, Res>` is public, prefixes `/v1` and
+// carries the same auth, so these bodies get honest hand-written types.
 //
-// Everything here is I/O and typing only. The guard chain, persistence, and audit trail live in
-// reservePayService, per backend/CLAUDE.md's service-layer rules.
+// I/O and typing only — guard chain, persistence and audit live in reservePayService.
 
 type RazorpayOrderResponse = {
   id: string;
@@ -113,23 +105,23 @@ type RazorpayOrderResponse = {
   created_at: number;
 };
 
-// The response to an intent-flow authorisation payment. `next` carries the UPI deep link the
-// customer approves in, plus a poll URL we don't use (we poll via payments.fetch instead).
+// `next` carries the UPI deep link the customer approves in, plus an unused poll URL — polling
+// goes through payments.fetch instead.
 type AuthPaymentResponse = {
   razorpay_payment_id: string;
   next?: Array<{ action: string; url: string }>;
 };
 
-// A debit against an existing token comes back already signed, in the same shape the browser
-// checkout callback produces — which is why verifyPaymentSignature above works on it unchanged.
+// Already signed, in the same shape the browser checkout callback produces, so
+// verifyPaymentSignature works on it unchanged.
 type DebitPaymentResponse = {
   razorpay_payment_id: string;
   razorpay_order_id: string;
   razorpay_signature: string;
 };
 
-// Subset of the token entity we actually consume. `recurring_details` is the live state of the
-// block: whether the customer approved it, and how much of it is left.
+// Subset of the token entity actually consumed. `recurring_details` is the live state of the
+// block: approved or not, and how much is left.
 export type RazorpayTokenResponse = {
   id: string;
   token: string;
@@ -154,9 +146,8 @@ export async function createRazorpayCustomer(params: {
   contact: string;
 }) {
   try {
-    // fail_existing "0" makes this idempotent against Razorpay's side: if a customer with these
-    // details already exists (e.g. we persisted ours and later lost it), we get that one back
-    // instead of a 400. Tokens are linked to a customer, so re-creating would orphan them.
+    // fail_existing "0" makes this idempotent: an existing customer with these details comes
+    // back instead of a 400. Tokens link to a customer, so re-creating would orphan them.
     const customer = await razorpay.customers.create({ ...params, fail_existing: 0 });
     return customer.id;
   } catch (err) {
@@ -165,12 +156,10 @@ export async function createRazorpayCustomer(params: {
 }
 
 /**
- * Step 1 of the SBMD chain: the authorisation order that defines the block.
- *
- * `amount`, `token.max_amount` and the authorisation payment's `amount` are all the same figure
- * — the amount being blocked. Razorpay's docs are inconsistent here (some SDK samples pass
- * `amount: 0`), but the worked example's intent URL carries `am=2.00&amrule=MAX` against a
- * 200-paise payment and the resulting token reports `amount_blocked: 200, max_amount: 200`.
+ * Step 1: the authorisation order defining the block. `amount`, `token.max_amount` and the
+ * authorisation payment's `amount` are all the same figure. Razorpay's docs are inconsistent
+ * (some samples pass `amount: 0`), but their worked example's intent URL carries
+ * `am=2.00&amrule=MAX` against a 200-paise payment and the token reports `amount_blocked: 200`.
  */
 export async function createReservePayAuthOrder(params: {
   amountPaise: number;
@@ -203,9 +192,8 @@ export async function createReservePayAuthOrder(params: {
 }
 
 /**
- * Step 2: the authorisation payment. Creates a pending token and returns the `upi://mandate`
- * deep link the customer approves with their UPI PIN — the one and only human step in the
- * entire rail.
+ * Step 2: the authorisation payment. Creates a pending token and returns the `upi://mandate` deep
+ * link the customer approves with their PIN — the only human step in the rail.
  */
 export async function createReservePayAuthPayment(params: {
   amountPaise: number;
@@ -241,12 +229,9 @@ export async function createReservePayAuthPayment(params: {
 }
 
 /**
- * Step 3: the order for a single debit against a confirmed block.
- *
- * Deliberately no `notification` object. The Reserve Pay docs are explicit that it is not
- * supported for this flow ("Skip this parameter entirely"), and passing it would also disable
- * Razorpay's own retry — a failed debit would then need manual re-triggering after a
- * `payment_after` timestamp.
+ * Step 3: the order for a single debit against a confirmed block. No `notification` object —
+ * unsupported for this flow, and passing it disables Razorpay's own retry, leaving a failed
+ * debit to be re-triggered manually after a `payment_after` timestamp.
  */
 export async function createReservePayDebitOrder(params: {
   amountPaise: number;
@@ -295,9 +280,9 @@ export async function createReservePayDebitPayment(params: {
       notes: params.notes,
     },
   });
-  // No try/catch here on purpose: a declined debit is a business outcome reservePayService has
-  // to persist (error code, failed debit row, audit entry) before it rethrows, so it needs the
-  // raw error. Every other call in this file fails fast because nothing is recorded yet.
+  // No try/catch: reservePayService has to persist the decline (error code, failed debit row,
+  // audit entry) before rethrowing, so it needs the raw error. Every other call here fails fast
+  // because nothing is recorded yet.
 }
 
 /** Reads `token_id` off the authorisation payment once the customer has approved it. */
@@ -321,16 +306,12 @@ export async function fetchCustomerToken(customerId: string, tokenId: string) {
 }
 
 /**
- * Releases a Reserve Pay block. All remaining funds are unblocked and credited back to the
- * customer instantly.
+ * Releases a block — remaining funds are unblocked and credited back instantly. Cancellable from
+ * `initiated`, `confirmed` and `paused`. Razorpay forwards to NPCI without extra validation, so
+ * it can fail on the remitter's side; the caller decides whether that is fatal.
  *
- * Cancellable from the `initiated`, `confirmed` and `paused` states. Razorpay forwards the
- * request to NPCI without additional validation, so it can fail on the remitter's side — the
- * caller decides whether that's fatal.
- *
- * Not to be confused with DELETE on the same resource, which drops the token from Razorpay's
- * records *without* cancelling the mandate, leaving the customer's funds blocked with no way
- * left to release them.
+ * Not DELETE on the same resource: that drops the token without cancelling the mandate, leaving
+ * the customer's funds blocked with no way to release them.
  */
 export async function cancelReservePayToken(customerId: string, tokenId: string) {
   return razorpay.api.put<unknown, { id: string; status: string }>({

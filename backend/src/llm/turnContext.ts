@@ -7,22 +7,14 @@ import { addressOneLine } from "../agent-interfaces/tools/presenters";
 import type { WidgetActionInput } from "../schemas/chat.schema";
 
 /**
- * The server-truth context block, rebuilt from the database at the start of every turn.
+ * Server-truth context, rebuilt from the database every turn, for two reasons: `clientState` can
+ * be stale or forged, so only `route` and `recentActions` are read from it and anything that
+ * could influence a purchase is rebuilt from Postgres; and without it nearly every conversation
+ * opens with three tool round trips before the model can say anything useful.
  *
- * Two reasons this exists rather than letting the model discover state by calling tools:
- *
- * 1. **`clientState` cannot be trusted.** The request carries a cart snapshot and a mandate from
- *    the browser. Both can be stale, and both can be forged. We read `route` and `recentActions`
- *    from it — hints about what the customer is looking at — and rebuild everything that could
- *    influence a purchase from Postgres.
- * 2. **Latency.** Without it, nearly every conversation opens with three tool round-trips
- *    (get_cart, list_addresses, get_payment_status) before the model can say anything useful.
- *    Three DB reads on our side is much cheaper than three model turns.
- *
- * Deliberately *not* included: the product catalog (that is what search is for), order history
- * (rarely relevant, and list_orders is one call away), and cart line items (only the aggregate
- * count/total — item-level detail must come from a live get_cart call, both so the cart widget
- * actually renders and so a multi-round turn can't act on a snapshot that's since gone stale).
+ * Not included: the catalog (that is what search is for), order history (list_orders is one call
+ * away), and cart line items — only the aggregate. Item detail must come from a live get_cart, so
+ * the widget renders and a multi-round turn cannot act on a stale snapshot.
  */
 
 function formatRecentActions(actions: WidgetActionInput[]): string | null {
@@ -51,11 +43,8 @@ function formatRecentActions(actions: WidgetActionInput[]): string | null {
 }
 
 /**
- * The Reserve Pay line, read locally.
- *
- * No Razorpay round trip: this runs on every single turn, and a provider hiccup must not stall a
- * conversation about which brand of milk to buy. The model is told the figures are local — if it
- * is about to act on the balance it should call get_payment_status, which does sync.
+ * Read locally, no Razorpay round trip — this runs every turn and a provider hiccup must not
+ * stall a conversation. get_payment_status is the one that syncs.
  */
 async function reservePayLine(userId: string): Promise<string> {
   const live = await reservePayService.getLiveMandate(userId);
@@ -94,9 +83,8 @@ export async function buildTurnContext(input: {
   if (cart.items.length === 0) {
     lines.push("Cart: empty.");
   } else {
-    // Deliberately no per-item breakdown here — see buildTurnContext's doc comment. Line items
-    // and itemIds must come from a live get_cart call, both so the customer sees the cart widget
-    // and so the numbers can't drift from a snapshot taken at the top of the turn.
+    // No per-item breakdown: line items and itemIds must come from a live get_cart, so the
+    // widget renders and the numbers cannot drift from a top-of-turn snapshot.
     lines.push(
       `Cart: ${cart.itemCount} item(s) · subtotal ₹${cart.subtotal} · delivery ₹${cart.deliveryFee} · total ₹${cart.total}. ` +
         `Call get_cart for the line items — do not guess them.`
@@ -129,8 +117,8 @@ export async function buildTurnContext(input: {
 
   const recent = formatRecentActions(input.recentActions);
   if (recent) {
-    // The frontend batches cart taps made outside the chat and sends them with the next turn.
-    // Without this the model re-adds what the customer already added by hand.
+    // The frontend batches cart taps made outside the chat into the next turn. Without this the
+    // model re-adds what the customer already added by hand.
     lines.push(`Since your last message the customer did this on the site: ${recent}.`);
   }
 

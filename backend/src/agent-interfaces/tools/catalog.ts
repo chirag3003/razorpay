@@ -1,16 +1,18 @@
 import * as categoryService from "../../services/categoryService";
 import * as productService from "../../services/productService";
+import * as searchAssistService from "../../services/searchAssistService";
 import {
   getProductSchema,
   emptySchema,
   relatedProductsSchema,
   searchProductsSchema,
+  searchProductsNlSchema,
 } from "../../schemas/agent-tool.schema";
 import { toAgentProduct, toAgentProductDetail } from "./presenters";
 import { defineTool } from "./types";
 
-// Discovery tools. Read-only, and per root Hard Rule #5 ("discovery is open, transacting is not")
-// these are the ones that would stay unauthenticated if the tool layer ever gets a public surface.
+// Discovery tools. Read-only — per Hard Rule #5 these are the ones that would stay
+// unauthenticated if the tool layer ever gets a public surface.
 
 const searchProducts = defineTool({
   name: "search_products",
@@ -38,8 +40,42 @@ const searchProducts = defineTool({
     return {
       products: result.items.map(toAgentProduct),
       total: result.total,
-      // Told explicitly rather than left for the model to infer from total vs length — it will
-      // otherwise offer to "show more" when there is nothing more.
+      // Explicit rather than inferred from total vs length — otherwise the model offers to
+      // "show more" when there is nothing more.
+      hasMore: result.total > result.items.length,
+    };
+  },
+});
+
+// For MCP callers with no LLM of their own. search_products stays LLM-free — this is a separate
+// tool one layer above it, and per LLM Isolation only this handler may reach searchAssistService.
+const searchProductsNl = defineTool({
+  name: "search_products_nl",
+  description:
+    "Search the catalog from a free-text description of what the customer wants (an LLM turns " +
+    "it into structured filters first). Prefer search_products if you already know exact " +
+    "keywords, a category slug, or specific tags — this tool is for vague, natural-language " +
+    "requests only.",
+  input: searchProductsNlSchema,
+  readOnly: true,
+  handler: async (_ctx, input) => {
+    const filters = await searchAssistService.buildSearchFiltersFromText(input.query);
+
+    const result = await productService.listProducts({
+      q: filters.category || filters.tag ? "" : input.query,
+      category: filters.category ?? [],
+      tag: filters.tag ?? [],
+      minPrice: filters.minPrice,
+      maxPrice: filters.maxPrice,
+      inStock: false,
+      sort: filters.sort ?? "popularity",
+      page: 1,
+      pageSize: 6,
+    });
+
+    return {
+      products: result.items.map(toAgentProduct),
+      total: result.total,
       hasMore: result.total > result.items.length,
     };
   },
@@ -53,8 +89,7 @@ const getProduct = defineTool({
   input: getProductSchema,
   readOnly: true,
   handler: async (_ctx, input) => {
-    // Ids are UUIDs; anything else is a slug. Trying both saves the model from having to know
-    // which identifier it happens to be holding.
+    // Ids are UUIDs, anything else is a slug — so the model need not know which it holds.
     const isUuid =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.slugOrId);
 
@@ -102,6 +137,7 @@ const listRelatedProducts = defineTool({
 
 export const catalogTools = [
   searchProducts,
+  searchProductsNl,
   getProduct,
   listCategories,
   listRelatedProducts,

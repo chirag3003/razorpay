@@ -1,18 +1,12 @@
 import { z } from "zod";
 
 /**
- * Validation for `POST /api/chat`.
+ * Validation for POST /api/chat, mirroring the client -> server half of
+ * web/lib/chat/protocol.ts. Leaf module — imports nothing but zod.
  *
- * Mirrors the client -> server half of `web/lib/chat/protocol.ts` (`ChatRequest`, `ClientTurn`,
- * `ClientState`, `WidgetAction`). Leaf module per backend/CLAUDE.md — imports nothing but zod.
- *
- * Two deliberate looseness decisions:
- *
- * - `clientState.cart` and `clientState.mandate` are accepted but **not trusted**. The orchestrator
- *   rebuilds both from the database (see llm/turnContext.ts), because a browser can send anything.
- *   They are validated only loosely enough to not 400 a well-behaved client.
- * - `token` is accepted and ignored. The frontend's `ChatRequest` carries it, but this route
- *   authenticates from the `Authorization` header like every other route in the app.
+ * `clientState.cart` and `clientState.mandate` are accepted but not trusted: turnContext rebuilds
+ * both from the database, so these are validated only loosely enough not to 400 a well-behaved
+ * client. `token` is accepted and ignored — auth comes from the Authorization header.
  */
 
 const rupees = z.number().int();

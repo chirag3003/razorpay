@@ -2,8 +2,8 @@ import { pgTable, uuid, text, jsonb, timestamp, integer, unique } from "drizzle-
 import { users } from "./users";
 import { products } from "./products";
 
-// Pending checkout details captured at /checkout/initiate, consumed at /checkout/verify
-// (or cleared on a payment.failed webhook). Nothing here once there's no in-flight checkout.
+// Captured at /checkout/initiate, consumed at /checkout/verify, cleared on payment.failed.
+// Null whenever there is no in-flight checkout.
 export type CheckoutSnapshot = {
   address: {
     type: string;

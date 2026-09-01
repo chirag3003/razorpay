@@ -57,14 +57,13 @@ cartRoutes.post(
   }
 );
 
-// Headless checkout against the caller's Reserve Pay mandate. No Checkout.js, no signature
-// round-trip — one call in, a finished order out. Fails with MANDATE_NOT_ACTIVE /
-// MANDATE_EXPIRED / INSUFFICIENT_BLOCKED_BALANCE before touching Razorpay if the block can't
-// cover it.
+// Headless checkout against the caller's Reserve Pay mandate: one call in, a finished order out.
+// Fails with MANDATE_NOT_ACTIVE / MANDATE_EXPIRED / INSUFFICIENT_BLOCKED_BALANCE before touching
+// Razorpay if the block can't cover it.
 cartRoutes.post(
   "/checkout/reserve-pay",
-  // paymentMethod is omitted rather than accepted-and-ignored: this path is always UPI Reserve
-  // Pay, and taking a field we silently overwrite would be lying about the contract.
+  // Omitted rather than accepted-and-ignored: this path is always UPI Reserve Pay, so taking a
+  // field that gets overwritten would misstate the contract.
   zValidator("json", initiateCheckoutSchema.omit({ paymentMethod: true })),
   async (c) => {
     const order = await orderService.checkoutWithReservePay(

@@ -19,8 +19,7 @@ function generateOrderNumber() {
   return `FC-${timestamp}${random}`;
 }
 
-// Validates the cart and address and freezes the totals. Shared by both checkout paths — the
-// browser one (initiateCheckout) and the headless Reserve Pay one — so they can't drift apart
+// Validates cart and address, freezes totals. Shared by both checkout paths so they cannot drift
 // on what gets charged or which errors a bad cart produces.
 async function buildCheckoutSnapshot(
   userId: string,
@@ -54,8 +53,8 @@ async function buildCheckoutSnapshot(
   return { cartId, snapshot };
 }
 
-// Records the in-flight checkout attempt on the cart. confirmPayment finds the cart by this
-// razorpay order id, which is how both checkout paths converge on one order-creation routine.
+// Records the in-flight attempt on the cart. confirmPayment finds the cart by this Razorpay
+// order id, which is how both checkout paths converge on one order-creation routine.
 async function stashPendingCheckout(
   cartId: string,
   razorpayOrderId: string,
@@ -81,15 +80,13 @@ export async function initiateCheckout(userId: string, input: InitiateCheckoutIn
 }
 
 /**
- * Headless checkout against a UPI Reserve Pay mandate — no Checkout.js popup, no signature
- * round-trip with the client, no customer interaction. This is the path AI-initiated orders take.
+ * Headless checkout against a Reserve Pay mandate — no Checkout.js, no client signature
+ * round-trip, no customer interaction. The path AI-initiated orders take.
  *
- * The sequence is reserve -> stash -> charge -> confirm, and the ordering is the whole point.
- * The cart snapshot must be on the cart *before* any money moves, because that snapshot is what
- * the payment.captured webhook rebuilds the order from if this process dies mid-charge. Stashing
- * after the charge (the obvious ordering) would leave exactly one unrecoverable window: money
- * taken, no order, and a webhook with nothing to reconstruct from. prepareDebit reserves the
- * funds and creates the Razorpay order without charging, which is what makes stashing early safe.
+ * Sequence is reserve -> stash -> charge -> confirm, and the order matters: the snapshot must be
+ * on the cart before any money moves, because that is what the payment.captured webhook rebuilds
+ * the order from if this process dies mid-charge. Stashing after the charge would leave one
+ * unrecoverable window — money taken, no order, nothing to reconstruct from.
  */
 export async function checkoutWithReservePay(userId: string, input: InitiateCheckoutInput) {
   const { cartId, snapshot } = await buildCheckoutSnapshot(userId, input, "upi_reserve_pay");
@@ -97,8 +94,8 @@ export async function checkoutWithReservePay(userId: string, input: InitiateChec
   const prepared = await reservePayService.prepareDebit({
     userId,
     amountInRupees: snapshot.total,
-    // Unique per attempt, not per cart — a retried checkout is a separate debit and needs its
-    // own receipt to stay traceable in reconciliation.
+    // Unique per attempt, not per cart: a retried checkout is a separate debit and needs its own
+    // receipt to stay traceable in reconciliation.
     receipt: `cart_${cartId.slice(0, 8)}_${Date.now().toString(36)}`,
   });
 
@@ -110,9 +107,8 @@ export async function checkoutWithReservePay(userId: string, input: InitiateChec
       description: `Order from cart ${cartId.slice(0, 8)}`,
     });
   } catch (err) {
-    // Nothing was charged, so clear the pending checkout rather than leaving the cart pointing
-    // at a Razorpay order that will never be paid — a stale stash would make the next
-    // payment.failed webhook wipe a checkout the customer never started.
+    // Nothing was charged. Clear the stash rather than leave the cart pointing at an order that
+    // will never be paid — the next payment.failed webhook would wipe an unrelated checkout.
     await db
       .update(carts)
       .set({ checkoutRazorpayOrderId: null, checkoutSnapshot: null })
@@ -127,9 +123,9 @@ export async function checkoutWithReservePay(userId: string, input: InitiateChec
   return order;
 }
 
-// Called by both the /checkout/verify route and the payment.captured webhook — signature
-// verification happens in the caller (each has a different signature scheme); this function
-// assumes the payment is already verified and just does the order-creation side, idempotently.
+// Called by /checkout/verify and the payment.captured webhook. Signature verification happens in
+// the caller (the two use different schemes); this assumes it passed and creates the order
+// idempotently.
 export async function confirmPayment(razorpayOrderId: string, razorpayPaymentId: string) {
   const [existingOrder] = await db
     .select()
@@ -189,8 +185,8 @@ export async function confirmPayment(razorpayOrderId: string, razorpayPaymentId:
       return order.id;
     });
   } catch (err) {
-    // Unique violation on orders.razorpay_order_id — the webhook and /verify raced each
-    // other and the other one won. Idempotent no-op: return what it created.
+    // Unique violation on orders.razorpay_order_id: the webhook and /verify raced and the other
+    // won. Return what it created.
     if (pgErrorCode(err) === PG_UNIQUE_VIOLATION) {
       const [raced] = await db
         .select()
@@ -220,9 +216,8 @@ export async function confirmPayment(razorpayOrderId: string, razorpayPaymentId:
   return getOrderWithItems(orderId);
 }
 
-// Signature check failed on /checkout/verify. The Razorpay order itself may still be genuine
-// (client sent a malformed/tampered payload) so the pending checkout snapshot is left in
-// place — a payment.captured webhook can still confirm it later. Just records the attempt.
+// Signature check failed on /checkout/verify. The Razorpay order may still be genuine, so the
+// pending snapshot is left in place for a payment.captured webhook to confirm later.
 export async function recordFailedVerification(razorpayOrderId: string) {
   const [cart] = await db
     .select({ userId: carts.userId })
@@ -240,8 +235,7 @@ export async function recordFailedVerification(razorpayOrderId: string) {
   });
 }
 
-// Clears a cart's pending checkout attempt on payment.failed — leaves the cart items intact
-// so the user can retry (a fresh /initiate call issues a new Razorpay order).
+// Clears the pending attempt on payment.failed. Cart items stay, so a fresh /initiate can retry.
 export async function cancelPendingCheckout(razorpayOrderId: string) {
   const [cart] = await db
     .select({ id: carts.id, userId: carts.userId })
@@ -266,8 +260,8 @@ export async function cancelPendingCheckout(razorpayOrderId: string) {
   });
 }
 
-// Exported so adminOrderService can return the exact same order+items+product shape the
-// storefront order endpoints use, without duplicating the join.
+// Exported so adminOrderService returns the same order+items+product shape without duplicating
+// the join.
 export async function getOrderWithItems(orderId: string) {
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
   if (!order) throw new NotFoundError("Order");

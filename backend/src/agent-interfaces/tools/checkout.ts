@@ -22,24 +22,18 @@ import {
 } from "./presenters";
 import { defineTool, toolError, type ToolContext } from "./types";
 
-// Checkout tools: addresses, slots, the Reserve Pay balance, and the two-step order placement.
+// Addresses, slots, Reserve Pay balance, and the two-step order placement.
 //
-// No payment logic lives here. prepare_order builds a Cart Mandate and place_order hands off to
-// orderService.checkoutWithReservePay, which already owns the reserve → stash → charge → confirm
-// sequence. Duplicating any part of that in the tool layer would violate Hard Rule #2 and give
-// agents a payment path the storefront never exercises.
+// No payment logic here: prepare_order builds a Cart Mandate, place_order hands off to
+// orderService.checkoutWithReservePay. Duplicating any of that would give agents a payment path
+// the storefront never exercises.
 
 /**
- * The customer's mandate, refreshed from Razorpay when possible.
+ * The customer's mandate, refreshed from Razorpay when possible, falling back to the local row on
+ * a provider outage — a balance question should not fail just because Razorpay is unreachable.
  *
- * getMandate re-syncs, which is what keeps the balance honest — but it also means two network
- * round-trips and a hard failure if the provider is unreachable. The balance already lives in our
- * own ledger, so a provider outage should not stop the agent telling a customer what they have
- * reserved. Fall back to the local row and let the caller carry on.
- *
- * Safe because nothing here authorises a payment: reservePayService.prepareDebit re-syncs and
- * re-checks the balance atomically at charge time, so a stale read can only ever cause a
- * decline, never an overdraw.
+ * Safe because nothing here authorises a payment: prepareDebit re-syncs and re-checks atomically
+ * at charge time, so a stale read causes a decline, never an overdraw.
  */
 async function mandateView(userId: string) {
   const live = await reservePayService.getLiveMandate(userId);
@@ -54,13 +48,9 @@ async function mandateView(userId: string) {
 }
 
 /**
- * The customer's remaining reserved balance, read locally.
- *
- * Deliberately not `reservePayService.getMandate`, which round-trips to Razorpay: this runs
- * immediately after a successful charge, where our own ledger is the fresher number (Razorpay's
- * `amount_debited` is eventually consistent and can still report the pre-debit figure seconds
- * later). Zero on failure rather than throwing — a bookkeeping read must never turn a completed
- * order into an error.
+ * Remaining balance, read locally. Not getMandate: this runs immediately after a charge, where
+ * the local ledger is fresher (Razorpay's `amount_debited` is eventually consistent). Zero on
+ * failure — a bookkeeping read must never turn a completed order into an error.
  */
 async function remainingAfterCharge(userId: string): Promise<number> {
   try {
@@ -120,9 +110,8 @@ const listDeliverySlots = defineTool({
 });
 
 /**
- * Reserve Pay state, shaped to answer "can this customer pay right now, and if not, what do they
- * need to do". Mirrors the frontend's ReservePayStatusPart, including `needed`, so the AI layer
- * can render the widget straight from this.
+ * Answers "can this customer pay right now, and if not, what next". Mirrors the frontend's
+ * ReservePayStatusPart, including `needed`, so the widget renders straight from it.
  */
 const getPaymentStatus = defineTool({
   name: "get_payment_status",
@@ -193,7 +182,7 @@ const startReservePaySetup = defineTool({
 
     return {
       mandate: toAgentMandate(mandate),
-      // The generic upi:// link is the right default — it lets the OS offer the customer's apps.
+      // The generic upi:// link is the default — the OS offers the customer's own apps.
       intentUrl: mandate.intentUrl,
       intentLinks: mandate.intentLinks,
       nextStep:
@@ -237,7 +226,7 @@ const prepareOrder = defineTool({
       });
     }
 
-    // Ownership-checked; throws InvalidAddressError for an id belonging to somebody else.
+    // Throws InvalidAddressError for an id belonging to somebody else.
     const address = await addressService.getAddressForUser(ctx.userId, input.addressId);
 
     const cartId = await cartService.getOrCreateActiveCartId(ctx.userId);
@@ -261,9 +250,8 @@ const prepareOrder = defineTool({
       );
     }
 
-    // Checked here as well as inside the debit so the customer is told before being shown a
-    // review they can't complete. reservePayService re-checks atomically at charge time; this is
-    // the friendly copy, that one is the guarantee.
+    // Checked here as well as inside the debit, so the customer is told before seeing a review
+    // they cannot complete. The atomic re-check at charge time is the guarantee; this is copy.
     if (presented.remaining < cart.total) {
       toolError(
         "reserve_insufficient",
@@ -311,16 +299,13 @@ const prepareOrder = defineTool({
 
     return {
       ...mandateService.presentCartMandate(quote),
-      // The signed snapshot's lines carry only what the signature covers (productId/qty/price).
-      // These carry the display fields too, read from the same cart at the same instant, so the
-      // review the customer approves shows a unit and an image. Money still comes from the
-      // snapshot — these are the same numbers, from the same read.
+      // The signed snapshot carries only what the signature covers (productId/qty/price); these
+      // add display fields from the same read, so the review shows a unit and an image. Money
+      // still comes from the snapshot.
       lines: cart.items.map(toAgentCartLine),
       address: toAgentAddress(address),
       slot: { id: input.slotId, label: slotLabel },
-      // No tokenId here on purpose — nothing in web/components/chat/widgets renders it, it only
-      // existed to satisfy web/lib/chat/protocol.ts's OrderReviewPart.payment being `required`.
-      // See web/issues.md for the frontend-side follow-up.
+      // No tokenId: no widget renders it. See web/issues.md for the frontend follow-up.
       payment: {
         method: "reserve_pay" as const,
         remaining: presented.remaining,
@@ -340,8 +325,7 @@ const placeOrder = defineTool({
   handler: async (ctx, input) => {
     const quote = await mandateService.getCartMandate(ctx.userId, input.quoteId);
 
-    // Idempotency. A retrying model — or a duplicated tool call — lands here and gets the order
-    // that already exists instead of buying the cart twice.
+    // Idempotency: a retrying model gets the existing order instead of buying the cart twice.
     if (quote.status === "consumed" && quote.orderId) {
       const order = await orderService.getOrderById(ctx.userId, quote.orderId);
       return {
@@ -368,17 +352,16 @@ const placeOrder = defineTool({
     }
 
     if (!mandateService.verifySignature(quote)) {
-      // The stored record doesn't match its own signature — it was altered after we issued it.
-      // Refuse rather than charge against a record we can't vouch for.
+      // The record doesn't match its own signature — altered after issue. Refuse rather than
+      // charge against a record we cannot vouch for.
       await mandateService.markStatus(quote.id, "superseded");
       toolError("conflict", "That quote failed its integrity check.", {
         hint: "Call prepare_order to issue a new one.",
       });
     }
 
-    // Checked as late as possible, immediately before charging: the customer approved a specific
-    // basket at a specific price, and if the cart has moved since then this quote no longer
-    // describes what they'd be buying.
+    // As late as possible, immediately before charging: the customer approved a specific basket
+    // at a specific price, and a cart that moved since means the quote no longer describes it.
     const cartId = await cartService.getOrCreateActiveCartId(ctx.userId);
     const cart = await cartService.requireNonEmptyCart(cartId);
     const currentFingerprint = mandateService.fingerprintLines(
@@ -391,12 +374,9 @@ const placeOrder = defineTool({
       }))
     );
 
-    // Derived from the snapshot, NOT read from quote.cartFingerprint. The signature covers the
-    // snapshot (canonicalPayload) but not that column, so trusting the column would leave a
-    // tamper path: rewrite cart_fingerprint to the hash of a different basket, leave the
-    // snapshot alone, and both the signature check above and this comparison would pass while
-    // the customer is charged the quoted total for different goods. Recomputing here makes the
-    // fingerprint derived data and closes it.
+    // Derived from the snapshot, NOT read from quote.cartFingerprint: the signature covers the
+    // snapshot but not that column. Trusting it would let a rewritten cart_fingerprint pass both
+    // this check and the signature check while charging the quoted total for different goods.
     const quotedFingerprint = mandateService.fingerprintLines(quote.snapshot.lines);
 
     if (currentFingerprint !== quotedFingerprint) {
@@ -407,24 +387,23 @@ const placeOrder = defineTool({
       });
     }
 
-    // The existing, already-verified payment path. No payment logic is reimplemented here.
+    // The existing, already-verified payment path — no payment logic reimplemented here.
     const order = await orderService.checkoutWithReservePay(ctx.userId, {
       addressId: quote.addressId,
       deliverySlot: quote.deliverySlot,
     });
 
-    // checkoutWithReservePay re-derives its own snapshot from the live cart at charge time, so
-    // in principle the charged total can differ from the quoted one. The fingerprint check above
-    // makes that window sub-millisecond and same-user-only, but it doesn't close it — so record
-    // any divergence rather than letting it pass silently.
+    // checkoutWithReservePay re-derives its snapshot from the live cart at charge time, so the
+    // charged total can in principle differ from the quoted one. The fingerprint check narrows
+    // that window but does not close it — record any divergence rather than lose it.
     const totalMatchesQuote = order.total === quote.snapshot.total;
 
     try {
       await mandateService.markStatus(quote.id, "consumed", order.id);
     } catch (err) {
-      // The money moved and the order exists; only our bookkeeping failed. Returning an error
-      // here would tell the customer their order failed when it didn't. A retry is safe: the
-      // cart is now empty, so the fingerprint check rejects it rather than double-charging.
+      // The money moved and the order exists; only bookkeeping failed. An error here would tell
+      // the customer their order failed when it didn't. A retry is safe — the cart is now empty,
+      // so the fingerprint check rejects it rather than double-charging.
       console.error(`Failed to mark cart mandate ${quote.id} consumed:`, err);
     }
 

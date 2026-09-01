@@ -1,26 +1,20 @@
 /**
- * Server-side mirror of the storefront chat wire contract.
+ * Server-side mirror of the server -> client half of `web/lib/chat/protocol.ts`, hand-maintained
+ * because the two packages share no build. `CHAT_PROTOCOL_VERSION` is the drift detector: bump it
+ * on both sides when a part's shape changes, and POST /api/chat rejects a client speaking the old
+ * one rather than streaming parts it cannot render.
  *
- * The authoritative copy is `web/lib/chat/protocol.ts`. This file is a hand-maintained duplicate
- * of the *server -> client* half of it, because the two packages share no build and there is no
- * shared types package to import from. `CHAT_PROTOCOL_VERSION` is the drift detector: bump it on
- * both sides whenever a part's shape changes, and `POST /api/chat` will reject a client speaking
- * the old one instead of silently streaming parts it can't render.
+ * Not mirrored: the widget lifecycle table, `isPartInteractive`, and the WidgetAction -> UI
+ * plumbing — rendering concerns. `WidgetAction` itself is, since it arrives as a client turn.
  *
- * What is deliberately NOT mirrored: the widget lifecycle table, `isPartInteractive`, and the
- * `WidgetAction` -> UI plumbing. Those are rendering concerns the backend has no opinion about.
- * `WidgetAction` itself IS mirrored, because it arrives on the wire as a client turn.
- *
- * MONEY: every value here is an INTEGER NUMBER OF RUPEES. The tool layer already converted the
- * Reserve Pay figures out of paise (presenters.ts `toAgentMandate`), so nothing in this file
- * should ever divide by 100.
+ * MONEY: integer rupees throughout. presenters.ts already converted out of paise; nothing here
+ * divides by 100.
  */
 
-// Bumped from 1 -> 2: OrderReviewPart.payment dropped `tokenId` (never rendered by any widget —
-// see web/issues.md). The frozen web/lib/chat/protocol.ts type still declares it required, so
-// this is a deliberate, temporary mismatch: it fails a real client loudly (400
-// PROTOCOL_VERSION_MISMATCH) rather than shipping a field that's silently undefined at runtime.
-// Bump the frontend to 2 once web/lib/chat/protocol.ts is updated per web/issues.md.
+// 1 -> 2: OrderReviewPart.payment dropped `tokenId`, which no widget rendered. web/ still
+// declares it required, so this mismatch is deliberate — a real client fails loudly with 400
+// PROTOCOL_VERSION_MISMATCH rather than receiving a field that is undefined at runtime. Bump
+// web/ to 2 per web/issues.md.
 export const CHAT_PROTOCOL_VERSION = 2;
 
 /** Integer rupees. */
@@ -127,12 +121,9 @@ export type WidgetAction =
 /* -------------------------------------------------------------------------- */
 
 /**
- * Ops the agent may ask the client to run.
- *
- * Cart ops exist in the frontend union but this backend never emits them: cart state is
- * server-side (backend/CLAUDE.md, "Cart Handling"), so the agent mutates it through the
- * `add_to_cart` tool and the client re-reads. Emitting both would double-add. `nav` is the only
- * directive we send.
+ * Ops the agent may ask the client to run. Cart ops exist in the frontend union but this backend
+ * never emits them — cart state is server-side, so the agent mutates it through `add_to_cart` and
+ * the client re-reads; emitting both would double-add. `nav` is the only directive sent.
  */
 export type ClientOp =
   | { kind: "cart.add"; productId: string; qty: number }

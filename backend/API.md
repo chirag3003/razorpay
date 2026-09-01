@@ -254,6 +254,16 @@ POST   /api/reserve-pay/mandates/debit   auth     test harness: debit without an
 POST   /api/chat                         auth     SSE; the storefront chat agent
 GET    /api/chat/:conversationId         auth     rendered transcript, no model call
 
+POST   /api/mcp                          agent    MCP tool server (see §6.14) — Bearer is an OAuth
+                                                   access token, never a copy-pasted human JWT
+GET    /.well-known/oauth-protected-resource/api/mcp   public   RFC 9728
+GET    /.well-known/oauth-authorization-server         public   RFC 8414
+POST   /oauth/register                   public   RFC 7591 dynamic client registration
+GET    /oauth/authorize                  public   redirects to web/'s /agent-connect (see §6.15)
+GET    /api/oauth/authorize/:requestId   public   for /agent-connect to render client name/scope
+POST   /api/oauth/authorize/decision     auth     the human's approve/deny, own session JWT
+POST   /oauth/token                      public   authorization_code / refresh_token exchange
+
 POST   /api/admin/login                  public   password -> admin JWT
 GET    /api/admin/dashboard              admin    summary counts + recent orders
 GET    /api/admin/orders                 admin    filters + pagination
@@ -710,8 +720,8 @@ polling.
 
 **This is not a REST surface.** It's an in-process TypeScript registry at
 `src/agent-interfaces/tools/`, imported and called directly by the AI layer. It is documented here
-because it is the contract the chat agent codes against, and because the A2A and MCP adapters will
-expose exactly these tools when they land.
+because it is the contract the chat agent codes against, and because §6.14's MCP adapter exposes
+exactly these tools unchanged (a future A2A adapter will too, when it lands).
 
 **Why it exists.** The REST endpoints above assume a browser holding a session JWT and return
 shapes a React page renders — a single catalog page is ~2,200 tokens, most of it placeholder image
@@ -964,6 +974,94 @@ already renders. Everything else in the chat flow works today.
 
 ---
 
+### 6.14 MCP tool server — `POST /api/mcp`
+
+Lets an independent agent (not just the first-party chat above) call §6.12's tool registry
+directly, over the [Model Context Protocol](https://modelcontextprotocol.io). Same tools, same
+`runTool`, same audit trail — this is a transport on top of §6.12, not a second implementation of
+anything in it.
+
+**Why MCP and not A2A first**, even though root `claude.md` names A2A the primary interface: MCP
+calls typed tools with structured JSON arguments (`add_to_cart({productId, qty})`) — no LLM
+needed on either side for most of them. A2A instead sends one free-text instruction per "skill";
+there's no structured-args call in A2A's wire protocol at all, so *every* A2A call would need this
+backend's LLM just to parse intent. That's a fundamentally different shape, and MCP is the one
+that matches "most tool calls need no AI, only search benefits from one" — see `search_products_nl`
+below. A2A remains a planned later phase wrapping the same §6.12 registry.
+
+**Auth:** `Authorization: Bearer <token>` — but this token is an **OAuth access token from §6.15's
+flow, never a copy-pasted human session JWT**. A human `/api/auth/login` token gets `401` here
+(and, symmetrically, an agent access token gets `401` from every human route) — see §6.15's "two
+mutually-exclusive JWT kinds." A request with no token gets `401` with a `WWW-Authenticate` header
+pointing at the protected-resource metadata document, which is what makes a real MCP client's
+OAuth discovery kick in automatically rather than needing to be told where to look.
+
+**Protocol:** standard MCP over Streamable HTTP (`@modelcontextprotocol/server`) —
+`initialize` → `tools/list` → `tools/call`. `tools/list` returns every tool in §6.12's table, one
+`inputSchema` per tool generated from the same Zod schema the chat agent's tool-calling uses, plus
+one addition:
+
+| Tool | Notes |
+|---|---|
+| `search_products_nl` | Takes a single free-text `query`. One non-streaming LLM call (`llm/searchQueryBuilder.ts`, invoked from `searchAssistService.ts` — see `backend/CLAUDE.md`'s LLM Isolation section) turns it into the same structured filters `search_products` accepts, then calls `search_products` with those. Falls back to a plain keyword search on any LLM failure — never a broken tool call. `search_products` itself is untouched and stays LLM-free. |
+
+A `tools/call` result maps `runTool`'s `{ok, data}` / `{ok:false, error}` onto MCP's
+`{content, structuredContent}` / `{isError:true, content}` — `content` is always the JSON payload
+as text, `structuredContent` is the same data machine-readable, and an error's `content` is the
+tool failure's `message` plus its `hint`, the same recovery text the chat agent's model reads.
+
+Every call's `ToolContext.actor` is `{type: "agent", id: userId}` (vs. the chat agent's
+`{type: "user", id: userId}`) — the only place in the codebase this branch of `actor` is
+exercised today. `audit_log` rows from an MCP-originated action carry `actor_type = 'agent'`
+correctly, with no change needed to any tool handler.
+
+---
+
+### 6.15 MCP OAuth — connecting an agent without a copy-pasted token
+
+`GET /.well-known/oauth-protected-resource/api/mcp`, `GET /.well-known/oauth-authorization-server`,
+`POST /oauth/register`, `GET /oauth/authorize`, `POST /oauth/token`, and one human-authenticated
+endpoint, `POST /api/oauth/authorize/decision`.
+
+This backend is both the Authorization Server and the Resource Server for `/api/mcp` — there's no
+separate identity provider to delegate to, `userService` already is the identity source. Full flow:
+
+1. The agent's MCP client gets a `401` from `/api/mcp` with a `WWW-Authenticate` header pointing
+   at the protected-resource metadata, discovers the Authorization Server from it, and (if it
+   hasn't already) registers itself via `POST /oauth/register` (RFC 7591) — a `client_id`, no
+   secret. Agents are public clients: PKCE is the actual protection, not a secret a headless
+   process couldn't keep anyway.
+2. It opens `GET /oauth/authorize?...&code_challenge=...&code_challenge_method=S256` (PKCE is
+   **mandatory** — anything but `S256` is rejected) in a browser. This backend validates the
+   request (`client_id` known, `redirect_uri` matches one registered for it exactly — no
+   prefix/partial match, this is the open-redirect guard) and **302-redirects to
+   `${PUBLIC_APP_URL}/agent-connect?request_id=...`** — a `web/` page, since this backend never
+   renders HTML (see `web/issues.md` for that page's spec).
+3. The human logs into the store (their existing session) and approves. That page calls
+   `GET /api/oauth/authorize/:requestId` to render what's being approved (client name, scope),
+   then `POST /api/oauth/authorize/decision` — behind `requireAuth`, the same middleware every
+   other authed route uses — with `{requestId, decision}`. This is deliberately the human's
+   *existing* login, not a new credential: approving a connection is "prove you're logged in,
+   then say yes." The response is `{redirectTo}`, back into the agent's own `redirect_uri` with
+   `?code=...&state=...` (or `?error=access_denied&state=...` on deny).
+4. The agent's MCP client exchanges the code at `POST /oauth/token`
+   (`grant_type=authorization_code`, plus its `code_verifier`) for an access token (a JWT, 24h
+   TTL) and a refresh token. `POST /oauth/token` with `grant_type=refresh_token` renews it —
+   refresh tokens rotate on every use (old one revoked, new one issued), so a stolen refresh
+   token is replayable exactly once.
+
+**Two mutually-exclusive JWT kinds, one secret.** The human session token (`{sub, exp}`) and the
+agent access token (`{sub, actorType: "agent", exp}`) both sign with `JWT_SECRET`, but each
+verification path rejects the other's shape — a leaked agent token cannot be replayed against any
+human route, and vice versa.
+
+**No scope or spend-cap enforcement yet.** Every connected agent gets one blanket `store:agent`
+scope covering the whole tool registry, same access the chat agent has. Root `claude.md`'s fuller
+"Intent Mandate" design (per-agent `scope`, `spend_cap`, tied to a Reserve Pay authorisation) is
+still future work — this is a smaller, explicitly-scoped-down step.
+
+---
+
 ## 7. Things intentionally not built (don't assume these exist)
 
 - No password reset / email verification / OAuth — signup+login only.
@@ -975,13 +1073,16 @@ already renders. Everything else in the chat flow works today.
   accounts or roles/RBAC, no order-status transition rules, no editing/deleting users, no
   audit-log read endpoint, no CSV/export, no login rate-limiting. Customer-facing order
   tracking is still not exposed (`status` changes are admin-only and not surfaced to the buyer).
-- No A2A or MCP transport. The tool layer (§6.12) is shaped so both adapters wrap it unchanged,
-  but neither exists — the only caller today is the first-party chat agent (§6.13).
+- No A2A transport. MCP shipped first (§6.14) since it matches "typed structured tool calls, no
+  LLM needed" — A2A's free-text "skill" shape would need this backend's LLM to parse every call,
+  not just search. A2A is a planned later phase wrapping the same tool registry unchanged.
 - The chat agent has **no upsell tooling beyond `list_related_products`**, no conversation list
   endpoint, no title editing, and no way to delete a conversation.
-- No agent tokens. `ToolContext.actor` is shaped for them, but there is no `agent_tokens` table,
-  no scope or spend-cap enforcement, and no `verifyAgentToken` middleware. Whoever calls the tool
-  layer is trusted to have authenticated the user.
+- No agent-token scope or spend-cap enforcement. `POST /api/mcp` (§6.14) is real OAuth
+  (§6.15) with a real, distinct agent access token now — but every connected agent gets one
+  blanket scope covering the whole tool registry, the same access the chat agent has. Root
+  `claude.md`'s fuller "Intent Mandate" design (per-agent `scope`, `spend_cap`, tied to a Reserve
+  Pay authorisation) is still future work.
 - Agents cannot modify orders. No cancel, no refund, no status change — §6.12's order tools are
   read-only, and there is no refund code anywhere in the backend.
 - No stock quantities. `products.inStock` is a boolean; nothing decrements on purchase, so

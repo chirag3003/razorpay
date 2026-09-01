@@ -10,14 +10,11 @@ import type { ServerEvent } from "../chat/protocol";
 import type { AppEnv } from "../types";
 
 /**
- * The storefront chat agent.
+ * Thin, like every other route: validate, call one service, stream what it yields. Orchestration
+ * lives in chatService.
  *
- * Thin, like every other route: validate, call one service, stream what it yields. All the
- * orchestration lives in chatService.
- *
- * The response is `text/event-stream` carrying one JSON `ServerEvent` per frame — exactly the
- * union web/lib/chat/protocol.ts already defines, which is what makes the frontend swap a
- * one-file change (`createSseTransport()` in web/lib/chat/transport.ts).
+ * `text/event-stream`, one JSON `ServerEvent` per frame — the union web/lib/chat/protocol.ts
+ * already defines, which keeps the frontend swap to one file.
  */
 export const chatRoutes = new Hono<AppEnv>();
 
@@ -41,8 +38,8 @@ chatRoutes.post("/", zValidator("json", chatRequestSchema), async (c) => {
   const request = c.req.valid("json");
   const userId = c.get("userId");
 
-  // A client speaking an older protocol would receive parts it cannot render. Fail loudly and
-  // outside the stream, where a normal error response still reaches it.
+  // Fail outside the stream, where a normal error response still reaches a client that would
+  // otherwise receive parts it cannot render.
   if (request.protocolVersion !== CHAT_PROTOCOL_VERSION) {
     return c.json(
       {
@@ -57,8 +54,7 @@ chatRoutes.post("/", zValidator("json", chatRequestSchema), async (c) => {
     const send = (event: ServerEvent) => stream.writeSSE({ data: JSON.stringify(event) });
 
     try {
-      // The client's abort propagates all the way to the OpenRouter request, so a closed panel
-      // stops costing tokens immediately.
+      // The abort propagates to the OpenRouter request, so a closed panel stops costing tokens.
       for await (const event of chatService.runChatTurn({
         userId,
         request,
@@ -69,9 +65,8 @@ chatRoutes.post("/", zValidator("json", chatRequestSchema), async (c) => {
     } catch (err) {
       if (c.req.raw.signal.aborted) return;
 
-      // Headers are already sent, so an exception cannot become a 4xx/5xx. It becomes an error
-      // frame instead — the stream stays well-formed and the panel renders a failure it can
-      // retry from, rather than hanging on a truncated response.
+      // Headers are already sent, so an exception cannot become a 4xx/5xx. As an error frame the
+      // stream stays well-formed and the panel renders a retryable failure instead of hanging.
       console.error("Chat turn failed:", err);
       await send({
         type: "error",

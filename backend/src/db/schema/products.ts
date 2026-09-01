@@ -26,8 +26,7 @@ export const products = pgTable("products", {
   ratingCount: integer("rating_count").notNull().default(0),
   inStock: boolean("in_stock").notNull().default(true),
   tags: text("tags").array().notNull().default([]),
-  // Set by the admin surface when a product can't be hard-deleted because a past order
-  // references it (order_items FK is onDelete: "restrict"). Non-null => hidden from every
-  // storefront read path and from add-to-cart, but still visible to admin and in order history.
+  // Set when a product can't be hard-deleted because a past order references it. Non-null hides
+  // it from every storefront read path and from add-to-cart, but not from admin or order history.
   archivedAt: timestamp("archived_at"),
 });

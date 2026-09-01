@@ -8,6 +8,10 @@ import type { SignupInput, UpdateProfileInput } from "../schemas/auth.schema";
 
 const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
+// Shorter-lived than the human session token: with no scope/spend-cap enforcement yet, a short
+// TTL is the only containment available. refreshAccessToken renews it silently.
+export const AGENT_TOKEN_TTL_SECONDS = 24 * 60 * 60; // 24 hours
+
 export async function createUser(input: SignupInput) {
   const [existing] = await db
     .select({ id: users.id })
@@ -88,8 +92,33 @@ export async function verifyToken(token: string) {
     const payload = await verify(token, env.JWT_SECRET, "HS256");
     if (typeof payload.sub !== "string")
       throw new UnauthorizedError("Invalid token");
+    // Agent tokens carry actorType and must not double as a human session token — same secret,
+    // deliberately distinct claim shape. verifyAgentToken is the mirror.
+    if (payload.actorType !== undefined)
+      throw new UnauthorizedError("Invalid token");
     return payload.sub;
   } catch {
     throw new UnauthorizedError("Invalid or expired token");
+  }
+}
+
+/**
+ * Issued only by oauthService's authorization-code/refresh-token exchange, never for a human to
+ * copy-paste. Same secret as the session token — one trust boundary, one account being delegated
+ * — tagged so the two are mutually exclusive.
+ */
+export function issueAgentToken(userId: string) {
+  const exp = Math.floor(Date.now() / 1000) + AGENT_TOKEN_TTL_SECONDS;
+  return sign({ sub: userId, actorType: "agent", exp }, env.JWT_SECRET, "HS256");
+}
+
+export async function verifyAgentToken(token: string) {
+  try {
+    const payload = await verify(token, env.JWT_SECRET, "HS256");
+    if (typeof payload.sub !== "string" || payload.actorType !== "agent")
+      throw new UnauthorizedError("Invalid agent token");
+    return payload.sub;
+  } catch {
+    throw new UnauthorizedError("Invalid or expired agent token");
   }
 }

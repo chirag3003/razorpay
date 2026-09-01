@@ -6,9 +6,8 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   phone: text("phone").notNull(),
   passwordHash: text("password_hash").notNull(),
-  // Razorpay customer id, created lazily the first time this user sets up a UPI Reserve Pay
-  // mandate and reused for every mandate after that — Razorpay links recurring tokens to
-  // customers, so re-creating one per mandate would orphan the earlier tokens.
+  // Created lazily on the first Reserve Pay mandate and reused for every one after: Razorpay
+  // links recurring tokens to customers, so a new customer per mandate would orphan them.
   razorpayCustomerId: text("razorpay_customer_id").unique(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

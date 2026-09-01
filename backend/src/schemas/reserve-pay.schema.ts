@@ -1,9 +1,8 @@
 import { z } from "zod";
 import { RESERVE_PAY_MAX_AMOUNT, RESERVE_PAY_MAX_EXPIRY_DAYS } from "../constants";
 
-// Both ceilings are regulatory, not preferences — Razorpay rejects anything above them. They're
-// also re-asserted inside reservePayService, because the chat/agent callers arriving next phase
-// reach the service without passing through this validator.
+// Both ceilings are regulatory, not preferences. Re-asserted inside reservePayService too,
+// because chat and MCP callers reach it without passing through this validator.
 export const createMandateSchema = z.object({
   amountInRupees: z
     .number()

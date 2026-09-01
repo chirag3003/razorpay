@@ -13,24 +13,9 @@ import type {
   ProductResultsPart,
 } from "./protocol";
 
-/**
- * Tool result -> rendered widget. The projection layer.
- *
- * The model is never given "UI tools" (`show_product_results` and friends). When a tool returns,
- * this table decides what the customer sees, built from the tool's own data. Two consequences,
- * both deliberate:
- *
- * - **The model cannot misquote a price.** Every rupee on screen came out of Postgres via the
- *   tool layer. That is root claude.md's Hard Rule #1 ("no LLM in the merchant transaction core")
- *   applied to the UI as well as to the debit.
- * - **Catalog data never round-trips through the model**, which is most of the token cost of a
- *   naive chat agent.
- *
- * The model still chooses *what to fetch* — through its tool arguments — and *what to say*.
- *
- * Shapes here must match web/lib/chat/protocol.ts exactly; see chat/protocol.ts for the mirror
- * and the CHAT_PROTOCOL_VERSION drift check.
- */
+// Tool result -> rendered widget. The model has no UI tools: every rupee on screen is projected
+// from a tool result, so it cannot misquote a price and catalog data never round-trips through it.
+// Shapes must match web/lib/chat/protocol.ts — see chat/protocol.ts for the drift check.
 
 /** The transcript is not a catalog page. */
 const MAX_PRODUCTS_PER_PART = 6;
@@ -45,14 +30,8 @@ export function nextPartId(kind: string): string {
 /* errors                                                                     */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Tool failure codes -> the frontend's narrower ChatErrorCode union.
- *
- * The tool codes were named to make this mapping mechanical (see tools/types.ts). Where the
- * frontend has no equivalent — `cart_empty`, `invalid_address`, `quote_expired` — the answer is
- * `server` and the *model* explains it in prose, because those are conversational problems the
- * assistant can talk its way out of, not payment failures needing a red box.
- */
+// Tool failure codes -> the frontend's narrower ChatErrorCode union. Codes with no frontend
+// equivalent fall through to `server` and are explained in prose instead of a red box.
 const ERROR_CODE_MAP: Record<string, ChatErrorCode> = {
   mandate_missing: "server",
   mandate_expired: "mandate_expired",
@@ -63,14 +42,8 @@ const ERROR_CODE_MAP: Record<string, ChatErrorCode> = {
   payment_gateway_unavailable: "bank_not_available",
 };
 
-/**
- * Which tool failures deserve a rendered error card at all.
- *
- * Most do not. `not_found`, `cart_empty` and `invalid_input` are things the model recovers from
- * on its own using the failure's `hint` — showing the customer a red box for "that slug doesn't
- * exist" while the assistant is already fixing it is noise. Only failures the *customer* has to
- * act on get a widget.
- */
+// Only failures the customer has to act on get a card. The rest (`not_found`, `cart_empty`,
+// `invalid_input`) the model recovers from itself using the failure's hint.
 const CUSTOMER_FACING_ERRORS = new Set([
   "mandate_expired",
   "mandate_revoked",
@@ -78,11 +51,8 @@ const CUSTOMER_FACING_ERRORS = new Set([
   "amount_exceeds_mandate_limit",
   "payment_declined",
   "payment_gateway_unavailable",
-  // These four were not customer-facing before place_order's confirm path ran through the model:
-  // the model could read the failure and narrate a recovery in prose ("that expired, let me get
-  // you a fresh one"). Now that confirm is a direct call with no model in the loop
-  // (chatService.handlePlaceOrderConfirm), an unmapped failure here would render nothing at all
-  // — a silent dead end on the highest-stakes action in the app. So these get real cards.
+  // Confirm is a direct call with no model in the loop (chatService.handlePlaceOrderConfirm),
+  // so nothing can narrate these in prose. Unmapped, they would render nothing at all.
   "quote_expired",
   "quote_superseded",
   "cart_changed",
@@ -122,8 +92,8 @@ function errorActions(error: ToolError): ErrorPart["actions"] {
         webCheckout,
       ];
     case "payment_declined":
-      // Never offer a retry here. The registry marks this non-retryable because the charge may
-      // in fact have succeeded and only its proof is suspect — retrying risks a second debit.
+      // Never offer a retry: the charge may have succeeded with only its proof suspect, so a
+      // retry risks a second debit.
       return [webCheckout];
     default:
       return error.retryable
@@ -165,19 +135,14 @@ function productResults(
     partId: nextPartId("products"),
     query,
     products,
-    // Only offered when there genuinely is more, so the customer is never sent to an empty page.
+    // Only when there is genuinely more — never send the customer to an empty page.
     moreHref: data.hasMore
       ? `${env.PUBLIC_APP_URL}/products${query ? `?q=${encodeURIComponent(query)}` : ""}`
       : undefined,
   };
 }
 
-/**
- * The one place a tool result becomes a widget.
- *
- * Returns null for tools whose output the model should simply narrate (`list_orders`,
- * `get_order`) — a widget for every call would turn the transcript into a dashboard.
- */
+/** Returns null for tools the model should narrate instead (`list_orders`, `get_order`). */
 export function toolResultToPart(
   name: string,
   input: unknown,
@@ -275,8 +240,8 @@ export function toolResultToPart(
       };
 
     case "check_reserve_pay_status":
-      // The polling tool. "found" means we reached the provider; the mandate's own status says
-      // whether the customer has actually approved it yet.
+      // "found" means the provider was reached; the mandate's own status says whether the
+      // customer has approved yet.
       if (data.state === "none" || !data.mandate) {
         return {
           type: "reserve_pay_status",
@@ -299,8 +264,7 @@ export function toolResultToPart(
         type: "reserve_pay_setup",
         partId: nextPartId("setup"),
         mode: "setup",
-        // The block exists at the provider; what's missing is the customer's PIN approval, and
-        // that deep link is the only step in this whole flow that needs a human.
+        // The block exists at the provider; only the customer's PIN approval is outstanding.
         step: "awaiting_approval",
         suggestedAmounts: suggestReserveAmounts(amount ?? 0),
         minAmount: RESERVE_PAY_MIN_AMOUNT,
@@ -347,36 +311,16 @@ export function toolResultToPart(
       };
     }
 
-    // list_orders / get_order: the model narrates. A widget per order lookup would turn the
-    // transcript into a dashboard.
     default:
       return null;
   }
 }
 
-/**
- * Collapses a turn's parts before they go out.
- *
- * Three `add_to_cart` calls in one message produce three identical-in-kind cart summaries; the
- * customer wants the final one. Applies only to `live`-lifecycle widget kinds — parts that
- * reflect current state and are therefore safe to deduplicate. Transient parts (a slot picker,
- * an order review, an error) each represent a distinct conversational commitment and are all
- * kept, in order.
- */
+// Widget kinds that reflect current state, so only the last one in a turn is worth emitting —
+// three add_to_cart calls should produce one cart summary. Transient parts (slot picker, order
+// review, error) each represent a distinct commitment and are all kept, in order.
 const COLLAPSIBLE: ReadonlySet<string> = new Set(["cart_summary"]);
 
 export function isCollapsible(type: MessagePart["type"]): boolean {
   return COLLAPSIBLE.has(type);
-}
-
-export function collapseParts(parts: MessagePart[]): MessagePart[] {
-  const lastIndexByType = new Map<string, number>();
-  parts.forEach((part, index) => {
-    if (COLLAPSIBLE.has(part.type)) lastIndexByType.set(part.type, index);
-  });
-
-  return parts.filter((part, index) => {
-    if (!COLLAPSIBLE.has(part.type)) return true;
-    return lastIndexByType.get(part.type) === index;
-  });
 }
