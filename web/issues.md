@@ -48,3 +48,37 @@ either it's dead weight like `payment.tokenId` was, or it's scaffolding for a fu
 specific reserved balance" affordance (e.g. showing which balance is active, or letting the
 customer revoke one by id) that was never built. If it's the latter, it should stay and get a
 consumer; if not, it can go the same way as `payment.tokenId`.
+
+## Needed: an `/agent-connect` page — the MCP OAuth consent screen
+
+The backend now has a full MCP OAuth server (`backend/API.md`'s new MCP OAuth section) so a
+customer's independent agent (`buyer-agent/`, or any other MCP client) can connect without ever
+being handed a bearer token to copy-paste. The one piece that isn't backend work: the actual
+human-facing consent screen, since this backend is a pure JSON API and never renders HTML.
+
+**Flow today, stopping at the gap:**
+
+1. The agent (via its MCP client's OAuth support) hits `GET /oauth/authorize` on the backend.
+2. The backend validates the request and **302-redirects the browser to
+   `${PUBLIC_APP_URL}/agent-connect?request_id=<uuid>`** — this page does not exist yet.
+3. Once it exists, it needs to:
+   - If the visitor isn't logged into the store, send them through the normal login first, then
+     back to this same URL (`request_id` and all).
+   - `GET /api/oauth/authorize/:requestId` → `{ requestId, clientName, scope }`. Render
+     `"<clientName> wants to connect to your account"` with Approve / Deny. A 404/409/410 from
+     this call means the request is unknown, already decided, or expired — show a plain "this
+     link is no longer valid" state, no retry.
+   - On the human's choice: `POST /api/oauth/authorize/decision` with the **existing session
+     JWT** (`Authorization: Bearer <token>`, same one every other authed call already uses),
+     body `{ requestId, decision: "approve" | "deny" }` → `{ redirectTo }`.
+   - `window.location.href = redirectTo` — this is the actual OAuth redirect back to the agent's
+     `redirect_uri` (with `?code=...&state=...` on approve, `?error=access_denied&state=...` on
+     deny). Don't treat it as a normal in-app navigation; it's leaving the site.
+
+No existing page or component covers this — it's new, and there's no equivalent flow anywhere
+else in the storefront to crib from (login/signup redirect to `/`, not to a third party).
+
+**Not needed for this to work, but worth doing later:** a "connected agents" view (e.g. in
+account settings) listing active connections with a revoke button — the backend has everything
+needed for it (`oauth_refresh_tokens`, one row per connected client) but no endpoint exposes it
+yet, since revocation wasn't part of what prompted this page.
