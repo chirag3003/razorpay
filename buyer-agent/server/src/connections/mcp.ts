@@ -1,5 +1,10 @@
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  UnauthorizedError,
+} from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { McpOAuthProvider } from "./oauthProvider.ts";
 import type {
   CallHooks,
   ConnectionRecord,
@@ -30,15 +35,42 @@ export class McpConnection implements MerchantConnection {
   #client: Client | null = null;
   /** Set for the duration of a callTool so the elicitation handler can reach the active hooks. */
   #hooks: CallHooks | null = null;
+  /** Persist the owning record — threaded through to the OAuth provider. */
+  #persist: () => Promise<void>;
+  #oauthProvider: McpOAuthProvider | null = null;
+  /** The merchant login/consent URL, captured when the OAuth flow needs a human. */
+  #authorizationUrl: string | null = null;
 
-  constructor(record: ConnectionRecord) {
+  constructor(record: ConnectionRecord, persist: () => Promise<void> = async () => {}) {
     this.id = record.id;
     this.#record = record;
+    this.#persist = persist;
     this.#label = record.label || record.url || record.command || record.id;
   }
 
   get label() {
     return this.#label;
+  }
+
+  /** Set once the OAuth flow has produced a URL a human must visit; cleared on connect. */
+  get authorizationUrl(): string | null {
+    return this.#authorizationUrl;
+  }
+
+  #oauth(): McpOAuthProvider {
+    if (!this.#oauthProvider) {
+      this.#record.auth ??= {};
+      this.#oauthProvider = new McpOAuthProvider({
+        connectionId: this.id,
+        label: this.#label,
+        state: this.#record.auth,
+        persist: this.#persist,
+        onAuthorizationUrl: (url) => {
+          this.#authorizationUrl = url;
+        },
+      });
+    }
+    return this.#oauthProvider;
   }
 
   async connect(): Promise<void> {
@@ -53,6 +85,8 @@ export class McpConnection implements MerchantConnection {
 
     await client.connect(this.#buildTransport());
     this.#client = client;
+    // A successful connect means we are no longer waiting on a human.
+    this.#authorizationUrl = null;
 
     const info = client.getServerVersion();
     if (info?.name) this.#label = this.#record.label || info.name;
@@ -68,11 +102,56 @@ export class McpConnection implements MerchantConnection {
     if (!this.#record.url) {
       throw new Error("An MCP connection needs either a url or a command.");
     }
-    const headers: Record<string, string> = {};
-    if (this.#record.token) headers.Authorization = `Bearer ${this.#record.token}`;
+    // A pasted static token wins — it's the "I already have a bearer" escape hatch.
+    // Otherwise drive the real OAuth flow: the transport handles discovery,
+    // registration, PKCE, token exchange and silent refresh via this provider.
+    if (this.#record.token) {
+      return new StreamableHTTPClientTransport(new URL(this.#record.url), {
+        requestInit: { headers: { Authorization: `Bearer ${this.#record.token}` } },
+      });
+    }
     return new StreamableHTTPClientTransport(new URL(this.#record.url), {
-      requestInit: { headers },
+      authProvider: this.#oauth(),
     });
+  }
+
+  /**
+   * Complete an OAuth authorization: exchange the code from the merchant's
+   * redirect for tokens, then connect. Called from the registry when the
+   * `/oauth/callback` route fires. Safe to call on a fresh instance after a
+   * restart — every dependency (client registration, PKCE verifier, discovery)
+   * was persisted before the redirect.
+   */
+  async finishAuthorization(params: URLSearchParams): Promise<void> {
+    if (!this.#record.url) {
+      throw new Error("Only a url-based MCP connection can complete OAuth.");
+    }
+
+    const error = params.get("error");
+    if (error) {
+      const description = params.get("error_description");
+      throw new Error(
+        description
+          ? `Authorization was refused: ${description}`
+          : error === "access_denied"
+            ? "You declined the connection."
+            : `Authorization failed (${error}).`,
+      );
+    }
+
+    const provider = this.#oauth();
+    const returnedState = params.get("state");
+    if (!returnedState || returnedState !== provider.expectedState) {
+      throw new Error("Authorization response did not match this connection (state mismatch).");
+    }
+
+    const transport = new StreamableHTTPClientTransport(new URL(this.#record.url), {
+      authProvider: provider,
+    });
+    await transport.finishAuth(params);
+    await transport.close().catch(() => {});
+
+    await this.connect();
   }
 
   #installElicitationHandler(client: Client) {
@@ -164,6 +243,15 @@ export class McpConnection implements MerchantConnection {
         structured: result.structuredContent,
       };
     } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        // The transport already tried a silent refresh and it failed — the
+        // refresh token itself is dead. Only a fresh human approval fixes this.
+        return {
+          ok: false,
+          text: "This connection needs to be re-authorized — reconnect it from the Connections panel.",
+          retryable: false,
+        };
+      }
       return {
         ok: false,
         text: err instanceof Error ? err.message : String(err),

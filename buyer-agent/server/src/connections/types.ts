@@ -1,3 +1,8 @@
+import type {
+  OAuthDiscoveryState,
+  StoredOAuthClientInformation,
+  StoredOAuthTokens,
+} from "@modelcontextprotocol/client";
 import type { FormRequest, FormResponse, JsonSchema, UrlPrompt } from "../forms/types.ts";
 
 export type ConnectionKind = "mcp" | "a2a";
@@ -58,6 +63,27 @@ export interface MerchantConnection {
   close(): Promise<void>;
 }
 
+/**
+ * OAuth client state for an MCP connection, persisted alongside the record.
+ *
+ * This is what an `OAuthClientProvider` needs to survive a process restart: the
+ * dynamic-client-registration result, the token pair, and the transient PKCE /
+ * CSRF / discovery state that spans the authorize redirect. Tokens never leave
+ * the server.
+ */
+export type McpOAuthState = {
+  /** RFC 7591 registration result, keyed by authorization-server issuer (SEP-2352). */
+  clients?: Record<string, StoredOAuthClientInformation>;
+  /** Access + refresh token pair, from the most recent exchange or refresh. */
+  tokens?: StoredOAuthTokens;
+  /** PKCE verifier — transient, spans the authorize redirect and the callback. */
+  codeVerifier?: string;
+  /** OAuth2 `state` value, compared against the callback to defeat CSRF. */
+  csrfState?: string;
+  /** Cached RFC 9728 / 8414 discovery, so a reconnect skips the round trips. */
+  discovery?: OAuthDiscoveryState;
+};
+
 /** What the registry persists. Tokens never leave the server. */
 export type ConnectionRecord = {
   id: string;
@@ -67,7 +93,10 @@ export type ConnectionRecord = {
   url?: string;
   command?: string;
   args?: string[];
+  /** Static bearer token. A2A uses this; an MCP url may use it as a fallback. */
   token?: string;
+  /** OAuth client state for an MCP url connection that speaks OAuth. */
+  auth?: McpOAuthState;
   addedAt: string;
 };
 
@@ -76,7 +105,9 @@ export type ConnectionStatus = {
   kind: ConnectionKind;
   label: string;
   target: string;
-  state: "connected" | "connecting" | "error";
+  state: "connected" | "connecting" | "authorizing" | "error";
   error?: string;
+  /** Set while `state === "authorizing"` — the merchant login/consent URL to open. */
+  authorizationUrl?: string;
   toolCount: number;
 };

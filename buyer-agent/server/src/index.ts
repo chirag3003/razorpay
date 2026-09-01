@@ -64,6 +64,54 @@ app.post("/api/connections/:id/reconnect", async (c) => {
   return c.json({ connection: status });
 });
 
+// Where a merchant's OAuth authorization server sends the browser back after the
+// human approves (or denies). Registered as the connection's redirect_uri. This
+// is a top-level browser navigation, not an API call — it answers with a plain
+// page telling the human to return to the agent.
+app.get("/api/connections/:id/oauth/callback", async (c) => {
+  const params = new URL(c.req.url).searchParams;
+  const status = await registry.completeOAuth(c.req.param("id"), params);
+
+  if (!status) {
+    return c.html(callbackPage("Unknown connection", "You can close this tab."), 404);
+  }
+  if (status.state === "connected") {
+    return c.html(
+      callbackPage("Connected ✓", "You can close this tab and return to the agent."),
+    );
+  }
+  return c.html(
+    callbackPage(
+      "Authorization failed",
+      status.error ?? "Please try again from the agent's Connections panel.",
+    ),
+    400,
+  );
+});
+
+function callbackPage(title: string, body: string): string {
+  const esc = (s: string) =>
+    s.replace(/[&<>"]/g, (ch) =>
+      ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : "&quot;",
+    );
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${esc(title)}</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; background: #0b0b0d; color: #e7e7ea;
+         display: grid; place-content: center; min-height: 100vh; margin: 0; text-align: center; }
+  main { max-width: 22rem; padding: 2rem; }
+  h1 { font-size: 1.15rem; margin: 0 0 .5rem; }
+  p { margin: 0; color: #a1a1aa; }
+</style>
+</head>
+<body><main><h1>${esc(title)}</h1><p>${esc(body)}</p></main></body>
+</html>`;
+}
+
 /* ------------------------------------------------------------------------ tools */
 
 app.get("/api/tools", (c) => {

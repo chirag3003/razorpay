@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../lib/api.ts";
 import type { ConnectionStatus, Settings, ToolPolicy } from "../lib/protocol.ts";
 
 const STATE_DOT = {
   connected: "bg-good",
   connecting: "bg-caution animate-pulse",
+  authorizing: "bg-caution animate-pulse",
   error: "bg-danger",
 } as const;
 
@@ -40,10 +41,44 @@ export function ConnectionsPanel({
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // While a connection is still settling (connecting, or waiting on a human to
+  // approve OAuth in another tab), poll so the row flips itself once it lands.
+  const pending = connections.some(
+    (c) => c.state === "connecting" || c.state === "authorizing",
+  );
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setInterval(onChanged, 2000);
+    return () => clearInterval(timer);
+  }, [pending, onChanged]);
+
+  function openApproval(conn: ConnectionStatus) {
+    if (conn.authorizationUrl) {
+      window.open(conn.authorizationUrl, "_blank", "noopener,noreferrer");
+    }
+  }
+
+  async function startApproval(id: string) {
+    setNotice(null);
+    setError(null);
+    try {
+      const { connection } = await api.reconnect(id);
+      if (connection.state === "authorizing" && connection.authorizationUrl) {
+        window.open(connection.authorizationUrl, "_blank", "noopener,noreferrer");
+        setNotice("Approve the connection in the tab that just opened — it finishes on its own.");
+      }
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   async function add() {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const [cmd, ...args] = command.trim().split(/\s+/);
       const result = await api.addConnection({
@@ -57,6 +92,15 @@ export function ConnectionsPanel({
       if (result.connection.state === "error") {
         setError(result.connection.error ?? "Could not connect.");
       } else {
+        if (
+          result.connection.state === "authorizing" &&
+          result.connection.authorizationUrl
+        ) {
+          window.open(result.connection.authorizationUrl, "_blank", "noopener,noreferrer");
+          setNotice(
+            "Approve the connection in the tab that just opened — it finishes on its own.",
+          );
+        }
         setUrl("");
         setCommand("");
         setLabel("");
@@ -145,7 +189,7 @@ export function ConnectionsPanel({
           <input
             className={inputClass}
             type="password"
-            placeholder="Bearer token (optional)"
+            placeholder="Bearer token (optional — advanced)"
             value={token}
             onChange={(e) => setToken(e.target.value)}
           />
@@ -160,8 +204,11 @@ export function ConnectionsPanel({
           </button>
 
           {error && <p className="text-xs leading-snug text-danger">{error}</p>}
+          {notice && <p className="text-xs leading-snug text-signal">{notice}</p>}
           <p className="text-[11px] leading-snug text-ink-700">
-            The token stays on the server and is never sent to this page.
+            An MCP URL normally connects by browser approval — no token needed. Paste one only
+            for a server that wants a static bearer (A2A, or a plain-token MCP server). Tokens
+            stay on the server and are never sent to this page.
           </p>
         </div>
       </section>
@@ -199,10 +246,25 @@ export function ConnectionsPanel({
                   <p className="flex-1 text-[11px] leading-snug text-danger">{conn.error}</p>
                   <button
                     type="button"
-                    onClick={() => api.reconnect(conn.id).then(onChanged)}
+                    onClick={() => startApproval(conn.id)}
                     className="shrink-0 text-[11px] text-ink-500 underline hover:text-ink-300"
                   >
                     retry
+                  </button>
+                </div>
+              ) : conn.state === "authorizing" ? (
+                <div className="mt-1 flex items-start gap-2">
+                  <p className="flex-1 text-[11px] leading-snug text-caution">
+                    Waiting for approval…
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      conn.authorizationUrl ? openApproval(conn) : startApproval(conn.id)
+                    }
+                    className="shrink-0 text-[11px] text-ink-500 underline hover:text-ink-300"
+                  >
+                    {conn.authorizationUrl ? "open approval page" : "get link"}
                   </button>
                 </div>
               ) : (

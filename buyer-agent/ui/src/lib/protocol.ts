@@ -63,8 +63,10 @@ export type ConnectionStatus = {
   kind: "mcp" | "a2a";
   label: string;
   target: string;
-  state: "connected" | "connecting" | "error";
+  state: "connected" | "connecting" | "authorizing" | "error";
   error?: string;
+  /** Set while `state === "authorizing"` — the merchant login/consent URL to open. */
+  authorizationUrl?: string;
   toolCount: number;
 };
 

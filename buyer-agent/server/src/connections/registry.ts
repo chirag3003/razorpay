@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { UnauthorizedError } from "@modelcontextprotocol/client";
 import { env } from "../config/env.ts";
 import { McpConnection } from "./mcp.ts";
 import { A2AConnection } from "./a2a.ts";
@@ -15,8 +16,9 @@ type Live = {
   record: ConnectionRecord;
   connection: MerchantConnection;
   tools: DiscoveredTool[];
-  state: "connected" | "connecting" | "error";
+  state: "connected" | "connecting" | "authorizing" | "error";
   error?: string;
+  authorizationUrl?: string;
 };
 
 /**
@@ -40,7 +42,11 @@ class ConnectionRegistry {
 
     const records = await this.#readRecords();
     // Connect in parallel — one unreachable server should not delay the others.
-    await Promise.all(records.map((record) => this.#bring(record).catch(() => {})));
+    // `initiateAuth: false` — a cold start must not open an OAuth redirect nobody
+    // is watching, nor race a new PKCE verifier over an in-flight approval.
+    await Promise.all(
+      records.map((record) => this.#bring(record, { initiateAuth: false }).catch(() => {})),
+    );
   }
 
   async #readRecords(): Promise<ConnectionRecord[]> {
@@ -81,28 +87,89 @@ class ConnectionRegistry {
     return toStatus(live);
   }
 
-  async #bring(record: ConnectionRecord): Promise<Live> {
+  async #bring(
+    record: ConnectionRecord,
+    opts?: { initiateAuth?: boolean },
+  ): Promise<Live> {
+    const initiateAuth = opts?.initiateAuth ?? true;
+
     // Replace any previous instance for this id so a re-add reconnects rather than leaking.
     await this.#live.get(record.id)?.connection.close().catch(() => {});
 
     const connection: MerchantConnection =
-      record.kind === "mcp" ? new McpConnection(record) : new A2AConnection(record);
+      record.kind === "mcp"
+        ? new McpConnection(record, () => this.#persist())
+        : new A2AConnection(record);
 
     const live: Live = { record, connection, tools: [], state: "connecting" };
     this.#live.set(record.id, live);
+
+    // Cold start for an OAuth MCP connection that was never approved: don't
+    // attempt a connect (it would mint a fresh authorize URL nobody asked for).
+    // The user clicks Reconnect to get a link.
+    if (
+      !initiateAuth &&
+      record.kind === "mcp" &&
+      record.url &&
+      !record.token &&
+      !record.auth?.tokens
+    ) {
+      live.state = "authorizing";
+      return live;
+    }
 
     try {
       await connection.connect();
       live.tools = await connection.listTools();
       live.state = "connected";
+      live.authorizationUrl = undefined;
       live.record.label = connection.label;
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        // The OAuth flow produced a URL a human must visit. Not an error state —
+        // the row waits, the UI opens the tab, the callback finishes it.
+        live.state = "authorizing";
+        live.error = undefined;
+        live.authorizationUrl =
+          connection instanceof McpConnection
+            ? (connection.authorizationUrl ?? undefined)
+            : undefined;
+      } else {
+        live.state = "error";
+        live.error = err instanceof Error ? err.message : String(err);
+        // Kept in the map deliberately: the user needs to see a failed connection in the UI to
+        // fix or remove it, and dropping it silently would look like the add never happened.
+      }
+    }
+    return live;
+  }
+
+  /**
+   * Complete an OAuth authorization from the `/oauth/callback` route: hand the
+   * redirect's query params to the connection, which exchanges the code and
+   * connects. Returns the updated status, or null if there's no such MCP
+   * connection to complete.
+   */
+  async completeOAuth(
+    id: string,
+    params: URLSearchParams,
+  ): Promise<ConnectionStatus | null> {
+    const live = this.#live.get(id);
+    if (!live || !(live.connection instanceof McpConnection)) return null;
+
+    try {
+      await live.connection.finishAuthorization(params);
+      live.tools = await live.connection.listTools();
+      live.state = "connected";
+      live.error = undefined;
+      live.authorizationUrl = undefined;
+      live.record.label = live.connection.label;
     } catch (err) {
       live.state = "error";
       live.error = err instanceof Error ? err.message : String(err);
-      // Kept in the map deliberately: the user needs to see a failed connection in the UI to fix
-      // or remove it, and dropping it silently would look like the add never happened.
     }
-    return live;
+    await this.#persist();
+    return toStatus(live);
   }
 
   async remove(id: string): Promise<void> {
@@ -145,6 +212,7 @@ function toStatus(live: Live): ConnectionStatus {
     target: live.record.url ?? `${live.record.command} ${(live.record.args ?? []).join(" ")}`.trim(),
     state: live.state,
     error: live.error,
+    authorizationUrl: live.authorizationUrl,
     toolCount: live.tools.length,
   };
 }
