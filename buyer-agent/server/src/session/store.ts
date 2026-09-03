@@ -1,4 +1,4 @@
-import type Anthropic from "@anthropic-ai/sdk";
+import type { ChatMessages } from "@openrouter/sdk/models";
 import type { ServerEvent } from "../protocol.ts";
 
 /**
@@ -59,11 +59,17 @@ export class Run {
   readonly queue = new EventQueue();
   #pending = new Map<string, (value: unknown) => void>();
   #aborted = false;
+  #controller = new AbortController();
 
   constructor(readonly conversationId: string) {}
 
   emit(event: ServerEvent) {
     this.queue.push(event);
+  }
+
+  /** Cancels the in-flight model request when the browser disconnects or hits stop. */
+  get signal(): AbortSignal {
+    return this.#controller.signal;
   }
 
   /** Park until the browser resolves `id`. */
@@ -92,6 +98,7 @@ export class Run {
    */
   abort() {
     this.#aborted = true;
+    this.#controller.abort();
     for (const [id, resolve] of this.#pending) {
       this.#pending.delete(id);
       resolve({ action: "cancel", decision: "reject", cancelled: true });
@@ -106,7 +113,7 @@ export class Run {
 
 export type Conversation = {
   id: string;
-  messages: Anthropic.Beta.BetaMessageParam[];
+  messages: ChatMessages[];
   /** Sum of detected amounts allowed so far. Feeds the session cap. */
   spent: number;
 };

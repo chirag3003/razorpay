@@ -1,11 +1,15 @@
 import { z } from "zod";
 
 /**
- * Validated once, at boot. A missing ANTHROPIC_API_KEY should crash startup, not surface as a
+ * Validated once, at boot. A missing OPENROUTER_API_KEY should crash startup, not surface as a
  * mysterious failure three turns into a conversation the user is watching.
  */
 const envSchema = z.object({
-  ANTHROPIC_API_KEY: z.string().min(1, "ANTHROPIC_API_KEY is required to run the agent loop"),
+  OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required to run the agent loop"),
+  /** Any OpenRouter model slug. Overridable so the provider swap is a one-line change. */
+  OPENROUTER_MODEL: z.string().default("z-ai/glm-5.3-flash"),
+  /** Tried server-side if the primary is unavailable. Empty disables failover. */
+  OPENROUTER_FALLBACK_MODEL: z.string().default("openai/gpt-5.6-luna"),
   PORT: z.coerce.number().int().positive().default(4100),
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
   /**

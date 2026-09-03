@@ -20,6 +20,8 @@ export const api = {
     command?: string;
     args?: string[];
     token?: string;
+    clientId?: string;
+    clientSecret?: string;
   }) => json<{ connection: ConnectionStatus }>("/api/connections", {
     method: "POST",
     body: JSON.stringify(input),

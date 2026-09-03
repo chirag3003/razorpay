@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api.ts";
 import type { ConnectionStatus, Settings, ToolPolicy } from "../lib/protocol.ts";
+import { AuthorizeCard } from "./AuthorizeCard.tsx";
 
 const STATE_DOT = {
   connected: "bg-good",
@@ -39,9 +40,20 @@ export function ConnectionsPanel({
   const [command, setCommand] = useState("");
   const [label, setLabel] = useState("");
   const [token, setToken] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // Connections showing an inline OAuth card (mid-approval, or just landed and flashing ✓).
+  const [authCards, setAuthCards] = useState<Set<string>>(new Set());
+
+  const addCard = (id: string) => setAuthCards((s) => new Set(s).add(id));
+  const dropCard = (id: string) =>
+    setAuthCards((s) => {
+      const next = new Set(s);
+      next.delete(id);
+      return next;
+    });
 
   // While a connection is still settling (connecting, or waiting on a human to
   // approve OAuth in another tab), poll so the row flips itself once it lands.
@@ -54,21 +66,21 @@ export function ConnectionsPanel({
     return () => clearInterval(timer);
   }, [pending, onChanged]);
 
-  function openApproval(conn: ConnectionStatus) {
-    if (conn.authorizationUrl) {
-      window.open(conn.authorizationUrl, "_blank", "noopener,noreferrer");
+  // The OAuth callback tab pings us on its way out — refresh immediately rather than
+  // waiting for the next poll tick.
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      if (event.data?.type === "buyer-agent:oauth-callback") onChanged();
     }
-  }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [onChanged]);
 
   async function startApproval(id: string) {
-    setNotice(null);
     setError(null);
     try {
       const { connection } = await api.reconnect(id);
-      if (connection.state === "authorizing" && connection.authorizationUrl) {
-        window.open(connection.authorizationUrl, "_blank", "noopener,noreferrer");
-        setNotice("Approve the connection in the tab that just opened — it finishes on its own.");
-      }
+      if (connection.state === "authorizing") addCard(id);
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -78,13 +90,15 @@ export function ConnectionsPanel({
   async function add() {
     setBusy(true);
     setError(null);
-    setNotice(null);
     try {
       const [cmd, ...args] = command.trim().split(/\s+/);
       const result = await api.addConnection({
         kind,
         label: label.trim() || undefined,
         token: token.trim() || undefined,
+        ...(kind === "mcp" && transport === "url" && clientId.trim()
+          ? { clientId: clientId.trim(), clientSecret: clientSecret.trim() || undefined }
+          : {}),
         ...(kind === "mcp" && transport === "stdio"
           ? { command: cmd, args }
           : { url: url.trim() }),
@@ -92,19 +106,13 @@ export function ConnectionsPanel({
       if (result.connection.state === "error") {
         setError(result.connection.error ?? "Could not connect.");
       } else {
-        if (
-          result.connection.state === "authorizing" &&
-          result.connection.authorizationUrl
-        ) {
-          window.open(result.connection.authorizationUrl, "_blank", "noopener,noreferrer");
-          setNotice(
-            "Approve the connection in the tab that just opened — it finishes on its own.",
-          );
-        }
+        if (result.connection.state === "authorizing") addCard(result.connection.id);
         setUrl("");
         setCommand("");
         setLabel("");
         setToken("");
+        setClientId("");
+        setClientSecret("");
       }
       onChanged();
     } catch (err) {
@@ -186,13 +194,39 @@ export function ConnectionsPanel({
             value={label}
             onChange={(e) => setLabel(e.target.value)}
           />
-          <input
-            className={inputClass}
-            type="password"
-            placeholder="Bearer token (optional — advanced)"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-          />
+          <details className="rounded-md border border-ink-800 bg-ink-950/40 px-2.5 py-1.5">
+            <summary className="cursor-pointer text-[11px] text-ink-500 select-none">
+              Advanced
+            </summary>
+            <div className="mt-2 space-y-2">
+              <input
+                className={inputClass}
+                type="password"
+                placeholder={
+                  kind === "a2a" ? "Bearer token" : "Bearer token (skips OAuth)"
+                }
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+              />
+              {kind === "mcp" && transport === "url" && (
+                <>
+                  <input
+                    className={inputClass}
+                    placeholder="OAuth client ID (if the server doesn't auto-register)"
+                    value={clientId}
+                    onChange={(e) => setClientId(e.target.value)}
+                  />
+                  <input
+                    className={inputClass}
+                    type="password"
+                    placeholder="OAuth client secret (optional)"
+                    value={clientSecret}
+                    onChange={(e) => setClientSecret(e.target.value)}
+                  />
+                </>
+              )}
+            </div>
+          </details>
 
           <button
             type="button"
@@ -204,11 +238,12 @@ export function ConnectionsPanel({
           </button>
 
           {error && <p className="text-xs leading-snug text-danger">{error}</p>}
-          {notice && <p className="text-xs leading-snug text-signal">{notice}</p>}
           <p className="text-[11px] leading-snug text-ink-700">
-            An MCP URL normally connects by browser approval — no token needed. Paste one only
-            for a server that wants a static bearer (A2A, or a plain-token MCP server). Tokens
-            stay on the server and are never sent to this page.
+            Add an MCP server's URL and click Connect. If it uses OAuth you'll get an Authorize
+            step — sign in once in a new tab and it connects itself. The Advanced fields (a static
+            bearer token, or a hand-registered OAuth client) are only for servers that need them;
+            A2A always uses a token. Nothing here is sent to this page — credentials stay on the
+            server.
           </p>
         </div>
       </section>
@@ -223,55 +258,56 @@ export function ConnectionsPanel({
         )}
 
         <div className="space-y-1.5">
-          {connections.map((conn) => (
-            <div key={conn.id} className="rounded-md border border-ink-800 bg-ink-900/60 px-2.5 py-2">
-              <div className="flex items-center gap-2">
-                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATE_DOT[conn.state]}`} />
-                <span className="truncate text-sm text-ink-100">{conn.label}</span>
-                <span className="shrink-0 rounded border border-ink-800 px-1 text-[10px] text-ink-500 uppercase">
-                  {conn.kind}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => api.removeConnection(conn.id).then(onChanged)}
-                  className="ml-auto shrink-0 text-xs text-ink-700 hover:text-danger"
-                  title="Disconnect"
-                >
-                  ✕
-                </button>
+          {connections.map((conn) => {
+            // An OAuth hand-off in progress (or one that just landed) gets the dedicated card
+            // instead of a status row.
+            if (conn.state === "authorizing" || authCards.has(conn.id)) {
+              return (
+                <AuthorizeCard
+                  key={conn.id}
+                  conn={conn}
+                  onDone={() => {
+                    dropCard(conn.id);
+                    onChanged();
+                  }}
+                />
+              );
+            }
+            return (
+              <div key={conn.id} className="rounded-md border border-ink-800 bg-ink-900/60 px-2.5 py-2">
+                <div className="flex items-center gap-2">
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATE_DOT[conn.state]}`} />
+                  <span className="truncate text-sm text-ink-100">{conn.label}</span>
+                  <span className="shrink-0 rounded border border-ink-800 px-1 text-[10px] text-ink-500 uppercase">
+                    {conn.kind}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => api.removeConnection(conn.id).then(onChanged)}
+                    className="ml-auto shrink-0 text-xs text-ink-700 hover:text-danger"
+                    title="Disconnect"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <p className="mt-0.5 truncate font-mono text-[10px] text-ink-700">{conn.target}</p>
+                {conn.state === "error" ? (
+                  <div className="mt-1 flex items-start gap-2">
+                    <p className="flex-1 text-[11px] leading-snug text-danger">{conn.error}</p>
+                    <button
+                      type="button"
+                      onClick={() => startApproval(conn.id)}
+                      className="shrink-0 text-[11px] text-ink-500 underline hover:text-ink-300"
+                    >
+                      retry
+                    </button>
+                  </div>
+                ) : (
+                  <p className="mt-0.5 text-[11px] text-ink-500">{conn.toolCount} tools</p>
+                )}
               </div>
-              <p className="mt-0.5 truncate font-mono text-[10px] text-ink-700">{conn.target}</p>
-              {conn.state === "error" ? (
-                <div className="mt-1 flex items-start gap-2">
-                  <p className="flex-1 text-[11px] leading-snug text-danger">{conn.error}</p>
-                  <button
-                    type="button"
-                    onClick={() => startApproval(conn.id)}
-                    className="shrink-0 text-[11px] text-ink-500 underline hover:text-ink-300"
-                  >
-                    retry
-                  </button>
-                </div>
-              ) : conn.state === "authorizing" ? (
-                <div className="mt-1 flex items-start gap-2">
-                  <p className="flex-1 text-[11px] leading-snug text-caution">
-                    Waiting for approval…
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      conn.authorizationUrl ? openApproval(conn) : startApproval(conn.id)
-                    }
-                    className="shrink-0 text-[11px] text-ink-500 underline hover:text-ink-300"
-                  >
-                    {conn.authorizationUrl ? "open approval page" : "get link"}
-                  </button>
-                </div>
-              ) : (
-                <p className="mt-0.5 text-[11px] text-ink-500">{conn.toolCount} tools</p>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 

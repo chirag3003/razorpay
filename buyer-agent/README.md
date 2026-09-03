@@ -45,7 +45,7 @@ cd buyer-agent
 bun install
 
 cp server/.env.example server/.env
-# Set ANTHROPIC_API_KEY — the agent loop cannot run without it.
+# Set OPENROUTER_API_KEY — the agent loop cannot run without it.
 
 bun run dev        # server on :4100, UI on :5173
 ```
@@ -104,7 +104,7 @@ server/                        Bun + Hono
   connections/mcp.ts           MCP client + elicitation → form
   connections/a2a.ts           A2A client + task lifecycle → form
   connections/registry.ts      add / discover / persist / reconnect
-  agent/loop.ts                streaming Claude loop, suspends for humans
+  agent/loop.ts                streaming OpenRouter loop, suspends for humans
   agent/builtins.ts            request_user_input, list_connections
   policy/classify.ts           read | write | money
   policy/gate.ts               approval + spend cap

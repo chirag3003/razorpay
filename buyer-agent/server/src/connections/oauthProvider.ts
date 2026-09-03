@@ -86,11 +86,18 @@ export class McpOAuthProvider implements OAuthClientProvider {
     ctx?: OAuthClientInformationContext,
   ): StoredOAuthClientInformation | undefined {
     const clients = this.#state.clients;
-    if (!clients) return undefined;
-    if (ctx) return clients[ctx.issuer];
-    // Per-request read with no ctx — return the most recently saved set.
-    const values = Object.values(clients);
-    return values[values.length - 1];
+    if (clients) {
+      if (ctx) return clients[ctx.issuer];
+      // Per-request read with no ctx — return the most recently saved set.
+      const values = Object.values(clients);
+      if (values.length > 0) return values[values.length - 1];
+    }
+    // No DCR result yet. Fall back to a hand-registered client if the human supplied one — this
+    // is what lets the flow work against a server that does not implement RFC 7591.
+    const manual = this.#state.manualClient;
+    return manual
+      ? { client_id: manual.client_id, client_secret: manual.client_secret }
+      : undefined;
   }
 
   async saveClientInformation(

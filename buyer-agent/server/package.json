@@ -10,8 +10,8 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.1.0",
-    "@anthropic-ai/sdk": "^0.122.0",
     "@modelcontextprotocol/client": "^2.0.0",
+    "@openrouter/sdk": "^1.2.83",
     "hono": "^4.13.5",
     "zod": "^4.5.2"
   },

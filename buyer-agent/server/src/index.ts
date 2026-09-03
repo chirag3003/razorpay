@@ -31,6 +31,9 @@ const addConnectionSchema = z.object({
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   token: z.string().optional(),
+  // Pre-registered OAuth client, for MCP servers without Dynamic Client Registration.
+  clientId: z.string().optional(),
+  clientSecret: z.string().optional(),
 });
 
 app.get("/api/connections", (c) => c.json({ connections: registry.statuses() }));
@@ -108,7 +111,14 @@ function callbackPage(title: string, body: string): string {
   p { margin: 0; color: #a1a1aa; }
 </style>
 </head>
-<body><main><h1>${esc(title)}</h1><p>${esc(body)}</p></main></body>
+<body><main><h1>${esc(title)}</h1><p>${esc(body)}</p></main>
+<script>
+  // Nudge the Connections panel to refresh immediately, then close this tab. The message
+  // carries no secret — it is only a "look again now" ping — so "*" as the target is fine.
+  try { if (window.opener) window.opener.postMessage({ type: "buyer-agent:oauth-callback" }, "*"); } catch (e) {}
+  setTimeout(function () { try { window.close(); } catch (e) {} }, 800);
+</script>
+</body>
 </html>`;
 }
 

@@ -70,6 +70,9 @@ class ConnectionRegistry {
     command?: string;
     args?: string[];
     token?: string;
+    /** Pre-registered OAuth client, for MCP servers without Dynamic Client Registration. */
+    clientId?: string;
+    clientSecret?: string;
   }): Promise<ConnectionStatus> {
     const record: ConnectionRecord = {
       id: slugId(input.label || input.url || input.command || input.kind),
@@ -79,6 +82,9 @@ class ConnectionRegistry {
       command: input.command,
       args: input.args,
       token: input.token,
+      ...(input.clientId
+        ? { auth: { manualClient: { client_id: input.clientId, client_secret: input.clientSecret } } }
+        : {}),
       addedAt: new Date().toISOString(),
     };
 

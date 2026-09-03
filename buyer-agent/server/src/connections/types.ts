@@ -72,6 +72,11 @@ export interface MerchantConnection {
  * the server.
  */
 export type McpOAuthState = {
+  /**
+   * A client the human pre-registered by hand, for authorization servers that do not implement
+   * Dynamic Client Registration (RFC 7591). Used only until a real DCR result lands in `clients`.
+   */
+  manualClient?: { client_id: string; client_secret?: string };
   /** RFC 7591 registration result, keyed by authorization-server issuer (SEP-2352). */
   clients?: Record<string, StoredOAuthClientInformation>;
   /** Access + refresh token pair, from the most recent exchange or refresh. */

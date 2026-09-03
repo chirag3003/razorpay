@@ -298,9 +298,10 @@ function toElicitContent(
 }
 
 export function qualify(connectionId: string, toolName: string): string {
-  // Anthropic tool names allow [a-zA-Z0-9_-]{1,128}; a server may use characters outside that.
+  // OpenAI/OpenRouter function names allow [a-zA-Z0-9_-]{1,64}; a server may use characters
+  // outside that, and its names may be longer.
   const safe = `${connectionId}__${toolName}`.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return safe.slice(0, 128);
+  return safe.slice(0, 64);
 }
 
 /** Flatten MCP content blocks into the text the model will read. */
