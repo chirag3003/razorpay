@@ -1,3 +1,4 @@
+import { env } from "../../config/env";
 import {
   deliverySlotLabel,
   RESERVE_PAY_DEFAULT_EXPIRY_DAYS,
@@ -224,19 +225,38 @@ const startReservePaySetup = defineTool({
     "approve with their PIN — this is the one step in the whole flow that needs a human. After " +
     "sending them the link, poll check_reserve_pay_status until it reports active. The customer " +
     "can only have one balance at a time, so topping up is a replacement: pass replaceExisting " +
-    "to revoke the current block and create a bigger one. Only do that when they asked for it.",
+    "to revoke the current block and create a bigger one. Only do that when they asked for it. " +
+    "If you are an external agent you receive approvalUrl, a page showing the amount, the account " +
+    "and the UPI app buttons — send the customer that link, never a raw upi:// string.",
   input: startReservePaySetupSchema,
   readOnly: false,
   handler: async (ctx, input) => {
     const mandate = await reservePayService.createMandate(ctx.userId, input);
+    const approvalUrl = mandate.approvalToken
+      ? new URL(`/approve/${mandate.approvalToken}`, env.PUBLIC_APP_URL).toString()
+      : null;
+
+    // An agent has no widget to render into, so a raw upi:// string would reach the customer as
+    // unreadable text they cannot tap on a desktop. Withholding it rather than merely advising
+    // against it is what makes that impossible — the hosted page shows the amount, whose account
+    // it credits, the per-app buttons and a QR.
+    if (ctx.actor.type === "agent") {
+      return {
+        mandate: toAgentMandate(mandate),
+        approvalUrl,
+        nextStep:
+          "Send the customer approvalUrl and nothing else — never a upi:// link. Then poll check_reserve_pay_status until status is active.",
+      };
+    }
 
     return {
       mandate: toAgentMandate(mandate),
       // The generic upi:// link is the default — the OS offers the customer's own apps.
       intentUrl: mandate.intentUrl,
       intentLinks: mandate.intentLinks,
+      approvalUrl,
       nextStep:
-        "Send the customer the intent link, then poll check_reserve_pay_status until status is active.",
+        "The widget shows the approval buttons. Poll check_reserve_pay_status until status is active.",
     };
   },
 });

@@ -10,6 +10,7 @@ import { addressRoutes } from "./routes/addresses";
 import { cartRoutes } from "./routes/cart";
 import { orderRoutes } from "./routes/orders";
 import { reservePayRoutes } from "./routes/reserve-pay";
+import { reservePayApprovalRoutes } from "./routes/reserve-pay-approval";
 import { chatRoutes } from "./routes/chat";
 import { adminRoutes } from "./routes/admin";
 import { oauthRoutes } from "./routes/oauth";
@@ -39,6 +40,8 @@ app.route("/api/products", productRoutes);
 app.route("/api/addresses", addressRoutes);
 app.route("/api/cart", cartRoutes);
 app.route("/api/orders", orderRoutes);
+// Before the authed router: reservePayRoutes guards "*", and the approval page has no session.
+app.route("/api/reserve-pay/approval", reservePayApprovalRoutes);
 app.route("/api/reserve-pay", reservePayRoutes);
 
 // SSE, streaming the ServerEvent union in web/lib/chat/protocol.ts.

@@ -1,0 +1,2 @@
+ALTER TABLE "reserve_pay_mandates" ADD COLUMN "approval_token" text;--> statement-breakpoint
+ALTER TABLE "reserve_pay_mandates" ADD CONSTRAINT "reserve_pay_mandates_approval_token_key" UNIQUE("approval_token");

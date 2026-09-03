@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { and, desc, eq, gt, gte, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { reservePayDebits, reservePayMandates, users } from "../db/schema";
@@ -23,6 +24,7 @@ import * as auditService from "./auditService";
 import * as paymentService from "./paymentService";
 import { gateway } from "./reservePayGateway";
 import { buildUpiIntentLinks } from "../utils/upi-intent";
+import { maskEmail, maskPhone } from "../utils/mask";
 import { pgErrorCode, PG_UNIQUE_VIOLATION } from "../utils/db-error";
 
 // UPI Reserve Pay (single block, multiple debit): guards, persistence, audit. The customer
@@ -153,6 +155,8 @@ export async function createMandate(
         razorpayCustomerId: customerId,
         maxAmountPaise: amountPaise,
         expiresAt,
+        // 256 bits, so the unauthenticated approval page cannot be found by guessing.
+        approvalToken: randomBytes(32).toString("base64url"),
       })
       .returning();
 
@@ -810,6 +814,9 @@ function present(mandate: MandateRow) {
     failureReason: mandate.failureReason,
     intentUrl: mandate.intentUrl,
     intentLinks: mandate.intentUrl ? buildUpiIntentLinks(mandate.intentUrl) : null,
+    // Every caller of present() is owner-scoped, so handing the owner their own approval token is
+    // safe. toAgentMandate does not forward it — agents get the built URL, never the raw token.
+    approvalToken: mandate.approvalToken,
     expiresAt: mandate.expiresAt,
     confirmedAt: mandate.confirmedAt,
     createdAt: mandate.createdAt,
@@ -817,6 +824,61 @@ function present(mandate: MandateRow) {
 }
 
 export { present as presentMandate };
+
+/**
+ * Everything the unauthenticated approval page renders, and nothing more — no mandate id, user id
+ * or Razorpay identifier, and contact details masked, because anyone holding the link sees this.
+ *
+ * The UPI link is withheld unless the block is still `pending`, so a link that outlives the
+ * approval cannot re-offer a live mandate URL. Returns null for an unknown token or a stale
+ * attempt, which the route turns into a 404 — the page cannot distinguish the two, by design.
+ */
+export async function getApprovalView(token: string) {
+  const [row] = await db
+    .select({ mandate: reservePayMandates, user: users })
+    .from(reservePayMandates)
+    .innerJoin(users, eq(users.id, reservePayMandates.userId))
+    .where(eq(reservePayMandates.approvalToken, token))
+    .limit(1);
+
+  if (!row) return null;
+
+  const { mandate, user } = row;
+
+  // Same window createMandate uses to decide a pending block was abandoned, so a link stops
+  // working exactly when the attempt behind it stops being resumable.
+  const stale =
+    mandate.status === "pending" &&
+    Date.now() - mandate.createdAt.getTime() > RESERVE_PAY_PENDING_TTL_MINUTES * 60 * 1000;
+
+  if (stale) return null;
+
+  const pending = mandate.status === "pending";
+
+  return {
+    status: mandate.status,
+    amountInRupees: mandate.maxAmountPaise / 100,
+    expiresAt: mandate.expiresAt,
+    account: {
+      name: user.name,
+      email: maskEmail(user.email),
+      phone: maskPhone(user.phone),
+    },
+    intentUrl: pending ? mandate.intentUrl : null,
+    intentLinks: pending && mandate.intentUrl ? buildUpiIntentLinks(mandate.intentUrl) : null,
+  };
+}
+
+/** Re-syncs the mandate behind an approval link, so the page's polling reflects the provider. */
+export async function syncByApprovalToken(token: string) {
+  const [mandate] = await db
+    .select()
+    .from(reservePayMandates)
+    .where(eq(reservePayMandates.approvalToken, token))
+    .limit(1);
+
+  if (mandate) await syncMandate(mandate.id);
+}
 
 /** Finds a mandate by its Razorpay token id — the key the token.* webhook events carry. */
 export async function findMandateByRazorpayTokenId(razorpayTokenId: string) {

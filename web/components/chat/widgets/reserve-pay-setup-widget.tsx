@@ -1,26 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { QRCodeSVG } from "qrcode.react";
-import { Check, Copy, Loader2, ShieldCheck, Smartphone } from "lucide-react";
-import { toast } from "sonner";
+import { Check, Loader2, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { UpiApprovalControls } from "@/components/reserve-pay/upi-approval-controls";
 import { cn, formatPrice } from "@/lib/utils";
-import { useMediaQuery } from "@/hooks/use-media-query";
-import type { ReservePaySetupPart, UpiIntentLinks, WidgetAction } from "@/lib/chat/protocol";
-
-/**
- * Order matters — these render as a grid, most-used first. Keys are `UpiIntentLinks` fields minus
- * `generic`, which is handled separately as the "any UPI app" fallback.
- */
-const UPI_APPS: { key: Exclude<keyof UpiIntentLinks, "generic">; label: string }[] = [
-  { key: "gpay", label: "Google Pay" },
-  { key: "phonepe", label: "PhonePe" },
-  { key: "paytm", label: "Paytm" },
-  { key: "bhim", label: "BHIM" },
-  { key: "cred", label: "CRED" },
-  { key: "whatsapp", label: "WhatsApp" },
-];
+import type { ReservePaySetupPart, WidgetAction } from "@/lib/chat/protocol";
 
 /**
  * The one human step in Reserve Pay: the customer approves a block in their UPI
@@ -38,7 +23,6 @@ export function ReservePaySetupWidget({
   interactive: boolean;
   onAction: (action: WidgetAction) => void;
 }) {
-  const isDesktop = useMediaQuery("(min-width: 640px)");
   const [amount, setAmount] = useState<number>(part.amount ?? part.suggestedAmounts[0] ?? 1000);
 
   if (part.step === "confirmed") {
@@ -53,9 +37,7 @@ export function ReservePaySetupWidget({
   }
 
   if (part.step === "awaiting_approval") {
-    return (
-      <AwaitingApproval part={part} isDesktop={isDesktop} onAction={onAction} />
-    );
+    return <AwaitingApproval part={part} onAction={onAction} />;
   }
 
   const options = part.suggestedAmounts;
@@ -115,11 +97,9 @@ export function ReservePaySetupWidget({
 
 function AwaitingApproval({
   part,
-  isDesktop,
   onAction,
 }: {
   part: ReservePaySetupPart;
-  isDesktop: boolean;
   onAction: (action: WidgetAction) => void;
 }) {
   const [dots, setDots] = useState(0);
@@ -142,64 +122,13 @@ function AwaitingApproval({
         Approve the {formatPrice(part.amount ?? 0)} block in your UPI app.
       </p>
 
-      {isDesktop ? (
-        // A upi:// link cannot open anything on a desktop, so hand the phone the mandate instead
-        // — scanning is how UPI desktop checkout works everywhere else.
-        <div className="mb-3 flex flex-col items-center gap-2 rounded-lg border bg-muted/30 p-3">
-          <div className="rounded-md bg-white p-2">
-            <QRCodeSVG value={uri} size={132} level="M" />
-          </div>
-          <p className="text-xs text-muted-foreground">Scan with any UPI app</p>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              void navigator.clipboard?.writeText(uri);
-              toast.success("UPI link copied");
-            }}
-          >
-            <Copy className="size-4" />
-            Copy link instead
-          </Button>
-        </div>
-      ) : links ? (
-        <div className="mb-3">
-          <div className="mb-2 grid grid-cols-2 gap-2">
-            {UPI_APPS.map((app) => (
-              <Button
-                key={app.key}
-                variant="outline"
-                nativeButton={false}
-                render={<a href={links[app.key]} />}
-                onClick={() => onAction({ type: "reserve_pay.intent_opened" })}
-              >
-                {app.label}
-              </Button>
-            ))}
-          </div>
-          {/* The generic scheme lets the OS offer whatever the customer actually has installed. */}
-          <Button
-            className="w-full"
-            nativeButton={false}
-            render={<a href={links.generic} />}
-            onClick={() => onAction({ type: "reserve_pay.intent_opened" })}
-          >
-            <Smartphone className="size-4" />
-            Any UPI app
-          </Button>
-        </div>
-      ) : (
-        <Button
-          className="mb-2 w-full"
-          nativeButton={false}
-          render={<a href={uri} />}
-          onClick={() => onAction({ type: "reserve_pay.intent_opened" })}
-        >
-          <Smartphone className="size-4" />
-          Approve in UPI app
-        </Button>
-      )}
+      <div className="mb-3">
+        <UpiApprovalControls
+          upiUri={uri}
+          links={links}
+          onOpened={() => onAction({ type: "reserve_pay.intent_opened" })}
+        />
+      </div>
 
       <Button
         type="button"

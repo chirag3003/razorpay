@@ -49,6 +49,10 @@ export const reservePayMandates = pgTable(
     // Stored so the status endpoint can hand it back — a customer who closed the app
     // mid-approval needs the link again.
     intentUrl: text("intent_url"),
+    // Unguessable key for the unauthenticated approval page an agent sends the customer.
+    // Deliberately not the row's id: that is already handed to agents as `tokenId`, and an
+    // identifier a caller holds should not double as the capability that opens a public page.
+    approvalToken: text("approval_token").unique(),
     expiresAt: timestamp("expires_at").notNull(),
     confirmedAt: timestamp("confirmed_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
