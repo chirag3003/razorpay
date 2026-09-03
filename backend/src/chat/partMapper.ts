@@ -189,6 +189,9 @@ export function toolResultToPart(
       return {
         type: "cart_summary",
         partId: nextPartId("cart"),
+        // toAgentCartLine already emits ChatCartLine's exact shape, so this passes straight
+        // through. Every cart tool returns them, so add/update/remove all list the new cart.
+        lines: data.lines ?? [],
         snapshot: {
           itemCount: data.itemCount ?? 0,
           subtotal: data.subtotal ?? 0,

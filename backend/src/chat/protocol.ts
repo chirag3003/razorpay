@@ -15,7 +15,11 @@
 // declares it required, so this mismatch is deliberate — a real client fails loudly with 400
 // PROTOCOL_VERSION_MISMATCH rather than receiving a field that is undefined at runtime. Bump
 // web/ to 2 per web/issues.md.
-export const CHAT_PROTOCOL_VERSION = 2;
+//
+// 2 -> 3: CartSummaryPart gained `lines`. Without them the widget could only ever show totals,
+// while systemPrompt.ts told the model to stay quiet and "let its widget show the detail" — so a
+// customer asking what was in their cart got neither.
+export const CHAT_PROTOCOL_VERSION = 3;
 
 /** Integer rupees. */
 export type Rupees = number;
@@ -158,6 +162,9 @@ export type ProductResultsPart = PartBase & {
 
 export type CartSummaryPart = PartBase & {
   type: "cart_summary";
+  // The widget is the only place cart contents are shown: systemPrompt.ts forbids the model from
+  // describing them in text. Empty for a cleared cart.
+  lines: ChatCartLine[];
   snapshot: {
     itemCount: number;
     subtotal: Rupees;

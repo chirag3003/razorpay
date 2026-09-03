@@ -117,7 +117,7 @@ End-to-end behaviour is unchanged and correct: `POST /api/reserve-pay/mandates` 
 `failed` rather than being left orphaned as `pending` — `GET /mandates/current` returns
 `{"mandate": null}` afterwards, so the slot is released and the next attempt is unblocked.
 
-## ~~Bug: "what's in my cart" answered in text, never the cart widget~~ — resolved
+## ~~Bug: "what's in my cart" answered in text, never the cart widget~~ — resolved, then regressed, now fixed
 
 Found during frontend integration testing: asking the chat "What is in my cart?" got a plain-text
 reply ("Your cart has one item: Toned Milk, 1 L packet, at ₹58...") instead of the `cart_summary`
@@ -142,6 +142,22 @@ model has no path to answer a cart-contents question, or to call `update_cart_it
 `remove_from_cart` (both require an itemId "from get_cart" per their own tool descriptions), other
 than calling `get_cart` — which is also what renders the widget and guarantees the numbers are
 this instant's DB truth, not a snapshot from the top of the turn.
+
+**Follow-up (2026-09-03): that fix traded one blind spot for another.** The widget it pointed the
+model at could only ever render totals — `CartSummaryPart` had no field for line items, and
+`partMapper`'s `cart_summary` branch dropped `get_cart`'s `lines` array. Meanwhile the new prompt
+rule told the model to stay quiet and "let its widget show the detail". So asking "what's in my
+cart" produced a widget with a subtotal and a Check out button and nothing else: no list, and no
+description either. Strictly worse than the original bug, where at least the items were named.
+
+Fixed by giving the widget the data the prompt already promised it: `CartSummaryPart.lines:
+ChatCartLine[]`, populated from `data.lines` in `partMapper`, rendered by
+`cart-summary-widget.tsx` using the same row layout as the order review widget. `ChatCartLine`
+already existed and `toAgentCartLine` already emitted its exact shape, so nothing needed
+converting. `CHAT_PROTOCOL_VERSION` 2 -> 3 on both sides.
+
+The lesson worth keeping: a prompt rule that defers to a widget is only as good as the widget's
+wire type. Changing one without the other silently drops information.
 
 ## ~~Missing: profile update endpoint~~ — resolved
 
