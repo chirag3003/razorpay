@@ -408,6 +408,14 @@ export const useChatStore = create<ChatState>()(
     {
       name: "freshcart-chat",
       storage: createJSONStorage(() => sessionStorage),
+      // Stored messages are protocol parts, so the wire's drift detector governs them too: a
+      // transcript written under an older version can be missing fields this build's widgets
+      // read, which crashes the panel on rehydrate rather than degrading.
+      version: CHAT_PROTOCOL_VERSION,
+      // Dropping the transcript is the migration. Parts cannot be back-filled — the data a newer
+      // widget wants was never captured — and an explicit migrate keeps zustand from logging
+      // "couldn't be migrated" on every load after a bump.
+      migrate: () => ({ messages: [], resolutions: {}, activePartId: null }),
       // `conversationId` is sourced from localStorage (see
       // `initialConversationId`/`writeStoredConversationId`), not this
       // sessionStorage-scoped slice.

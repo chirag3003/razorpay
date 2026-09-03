@@ -38,7 +38,10 @@ export function CartSummaryWidget({
           qty: line.qty,
           price: line.product.price,
         }))
-      : part.lines;
+      : // Parts are persisted verbatim — in sessionStorage and in chat_messages — so a
+        // transcript written before `lines` existed replays without it. Degrade to totals-only
+        // rather than crashing on history that can never be backfilled.
+        (part.lines ?? []);
 
   return (
     <div className="p-3">

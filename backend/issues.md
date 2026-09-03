@@ -159,6 +159,26 @@ converting. `CHAT_PROTOCOL_VERSION` 2 -> 3 on both sides.
 The lesson worth keeping: a prompt rule that defers to a widget is only as good as the widget's
 wire type. Changing one without the other silently drops information.
 
+**And a second lesson, found immediately after shipping it:** adding a required field to a part
+crashed the panel with `can't access property "length", lines is undefined`. Parts are persisted
+verbatim in two places that the wire's version guard does not reach:
+
+1. `web/store/chat-store.ts` — zustand `persist` to sessionStorage, which had **no `version`**, so
+   a v2 transcript rehydrated straight into v3 widgets.
+2. `chat_messages.parts` (JSONB) — replayed by `GET /api/chat/:conversationId`
+   (`routes/chat.ts:34`) and on a `resume` turn (`chatService.ts:208`). That response even stamps
+   the *current* `protocolVersion` onto parts written under an older one.
+
+`CHAT_PROTOCOL_VERSION` only guards the request; it says nothing about stored parts. Mitigated
+three ways: the chat store now sets `version: CHAT_PROTOCOL_VERSION` with a `migrate` that drops
+the transcript, and `cart-summary-widget.tsx` treats `lines` as possibly-absent so old history
+degrades to totals instead of throwing.
+
+**Still open:** parts in `chat_messages` carry no version stamp, so the next protocol bump has the
+same exposure. Options are a `protocol_version` column on `chat_messages` with old rows filtered
+out of replay, or a standing rule that new part fields are optional on the client side. Recorded
+rather than fixed — it needs a decision, not a patch.
+
 ## ~~Missing: profile update endpoint~~ — resolved
 
 `PATCH /api/auth/me` is implemented (`src/routes/auth.ts`, `userService.updateUser`), matching

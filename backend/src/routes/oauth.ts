@@ -44,7 +44,7 @@ oauthRoutes.get("/.well-known/*", (c) => {
     oauthMetadataResponse(c.req.raw, {
       oauthMetadata,
       resourceServerUrl: resourceUrl,
-      resourceName: "Razorpay Store",
+      resourceName: "Fresh Cart",
       scopesSupported: ["store:agent"],
     }) ?? c.notFound()
   );

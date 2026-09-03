@@ -12,7 +12,7 @@ export const openrouter = new OpenRouter({
   httpReferer: env.PUBLIC_APP_URL,
   // ASCII only: this becomes an HTTP header, and headers are Latin-1. An em dash here
   // throws "Header 'X-OpenRouter-Title' has invalid value" before the request is even sent.
-  appTitle: "Razorpay Store Growth Agent",
+  appTitle: "Fresh Cart",
 });
 
 // Primary plus fallbacks, in try order. OpenRouter's `models` array fails over server-side, so
