@@ -93,7 +93,7 @@ built ourselves.
 - **Backend:** Node/TypeScript, official Razorpay SDK
 - **Database:** Postgres
 - **Webhook receiver:** built into backend, tunneled via ngrok for local dev
-- **LLM:** Anthropic Claude API, used only in the locations listed in Hard Rule #1
+- **LLM:** OpenRouter (`@openrouter/sdk`), model set by `OPENROUTER_MODEL`; used only in the locations listed in Hard Rule #1
 - **Payment rail:** Razorpay test-mode APIs — Orders, Payments, Payment Links, Subscriptions/
   Autopay, UPI Reserve Pay (SBMD)
 
