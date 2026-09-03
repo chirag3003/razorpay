@@ -13,7 +13,10 @@
 
 import type { AddressFormValues } from "@/lib/validation";
 
-export const CHAT_PROTOCOL_VERSION = 2;
+// 2 -> 3: CartSummaryPart gained `lines`, so the cart widget can list items instead of only
+// totals. The backend's system prompt tells the model not to describe cart contents in text, so
+// this widget is the only place they appear.
+export const CHAT_PROTOCOL_VERSION = 3;
 
 /** Integer rupees. */
 export type Rupees = number;
@@ -166,6 +169,9 @@ export type ProductResultsPart = PartBase & {
 
 export type CartSummaryPart = PartBase & {
   type: "cart_summary";
+  // The only place cart contents are shown — the model is told not to describe them in text.
+  // Empty for a cleared cart.
+  lines: ChatCartLine[];
   snapshot: {
     itemCount: number;
     subtotal: Rupees;

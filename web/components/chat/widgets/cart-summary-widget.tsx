@@ -4,7 +4,10 @@ import { ShoppingBag } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatPrice } from "@/lib/utils";
 import { useCartSummary } from "@/store/cart-store";
-import type { CartSummaryPart, WidgetAction } from "@/lib/chat/protocol";
+import type { CartSummaryPart, ChatCartLine, WidgetAction } from "@/lib/chat/protocol";
+
+/** One row's worth of a cart line, from either the live store or the part. */
+type DisplayLine = Pick<ChatCartLine, "itemId" | "name" | "image" | "qty" | "price">;
 
 /**
  * `live` lifecycle. Reads the cart store rather than `part.snapshot` so an old
@@ -24,12 +27,44 @@ export function CartSummaryWidget({
   const deliveryFee = live.lines.length > 0 ? live.deliveryFee : part.snapshot.deliveryFee;
   const total = live.lines.length > 0 ? live.total : part.snapshot.total;
 
+  // Same precedence as the totals above, and for the same reason — mixing live totals with the
+  // part's older lines would show a list that doesn't add up to the total beneath it.
+  const lines: DisplayLine[] =
+    live.lines.length > 0
+      ? live.lines.map((line) => ({
+          itemId: line.itemId,
+          name: line.product.name,
+          image: line.product.image,
+          qty: line.qty,
+          price: line.product.price,
+        }))
+      : part.lines;
+
   return (
     <div className="p-3">
       <div className="mb-2 flex items-center gap-2 text-sm font-medium">
         <ShoppingBag className="size-4 text-primary" />
         {itemCount} item{itemCount === 1 ? "" : "s"}
       </div>
+
+      {lines.length > 0 && (
+        <div className="mb-2 flex flex-col divide-y border-y">
+          {lines.map((line) => (
+            <div key={line.itemId} className="flex items-center gap-2.5 py-2">
+              <img
+                src={line.image}
+                alt=""
+                className="size-9 shrink-0 rounded-md bg-muted object-cover"
+              />
+              <p className="min-w-0 flex-1 truncate text-xs">
+                {line.name}
+                <span className="text-muted-foreground"> × {line.qty}</span>
+              </p>
+              <p className="text-xs font-medium">{formatPrice(line.price * line.qty)}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       <dl className="space-y-1 text-sm">
         <Row label="Subtotal" value={formatPrice(subtotal)} />
