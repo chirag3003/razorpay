@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { createMandateSchema, debitMandateSchema } from "../schemas/reserve-pay.schema";
 import * as reservePayService from "../services/reservePayService";
+import { reservePaySimRoutes } from "./reserve-pay-sim";
 import { requireAuth } from "../middleware/auth";
+import { env } from "../config/env";
 import type { AppEnv } from "../types";
 
 // UPI Reserve Pay mandates. Authorising a block is the one step needing a human; everything
@@ -10,6 +12,12 @@ import type { AppEnv } from "../types";
 export const reservePayRoutes = new Hono<AppEnv>();
 
 reservePayRoutes.use("*", requireAuth);
+
+// Registered only in simulator mode, rather than registered and then guarded — a control that
+// can move a mandate's status should not exist as a route at all in a real deployment.
+if (env.RESERVE_PAY_SIM) {
+  reservePayRoutes.route("/sim", reservePaySimRoutes);
+}
 
 reservePayRoutes.post("/mandates", zValidator("json", createMandateSchema), async (c) => {
   const mandate = await reservePayService.createMandate(c.get("userId"), c.req.valid("json"));

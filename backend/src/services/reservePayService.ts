@@ -21,6 +21,7 @@ import {
 } from "../errors";
 import * as auditService from "./auditService";
 import * as paymentService from "./paymentService";
+import { gateway } from "./reservePayGateway";
 import { buildUpiIntentLinks } from "../utils/upi-intent";
 import { pgErrorCode, PG_UNIQUE_VIOLATION } from "../utils/db-error";
 
@@ -28,7 +29,8 @@ import { pgErrorCode, PG_UNIQUE_VIOLATION } from "../utils/db-error";
 // approves one block with their UPI PIN; every debit after that is server-to-server with no
 // customer interaction, which is what makes AI-initiated ordering possible.
 //
-// Raw gateway calls live in paymentService. Never import /llm — transaction core (Hard Rule #1).
+// Gateway calls go through reservePayGateway, which is paymentService in real mode and the
+// simulator when RESERVE_PAY_SIM is on. Never import /llm — transaction core (Hard Rule #1).
 
 type MandateRow = typeof reservePayMandates.$inferSelect;
 
@@ -85,7 +87,7 @@ export async function listMandates(userId: string) {
 async function ensureRazorpayCustomer(user: typeof users.$inferSelect) {
   if (user.razorpayCustomerId) return user.razorpayCustomerId;
 
-  const customerId = await paymentService.createRazorpayCustomer({
+  const customerId = await gateway.createRazorpayCustomer({
     name: user.name,
     email: user.email,
     contact: user.phone,
@@ -157,7 +159,7 @@ export async function createMandate(
   let order;
   let auth;
   try {
-    order = await paymentService.createReservePayAuthOrder({
+    order = await gateway.createReservePayAuthOrder({
       amountPaise,
       customerId,
       receipt: `rp_auth_${Date.now().toString(36)}`,
@@ -167,7 +169,7 @@ export async function createMandate(
       expireAt: Math.floor(expiresAt.getTime() / 1000),
     });
 
-    auth = await paymentService.createReservePayAuthPayment({
+    auth = await gateway.createReservePayAuthPayment({
       amountPaise,
       orderId: order.id,
       customerId,
@@ -311,7 +313,7 @@ export async function syncMandate(mandateId: string) {
 
   // The token id exists only once the customer approves; until then the payment carries null.
   if (!tokenId && mandate.razorpayPaymentId) {
-    const payment = await paymentService.fetchPayment(mandate.razorpayPaymentId);
+    const payment = await gateway.fetchPayment(mandate.razorpayPaymentId);
     tokenId = payment.token_id ?? null;
     if (tokenId) updates.razorpayTokenId = tokenId;
 
@@ -322,7 +324,7 @@ export async function syncMandate(mandateId: string) {
   }
 
   if (tokenId) {
-    const token = await paymentService.fetchCustomerToken(mandate.razorpayCustomerId, tokenId);
+    const token = await gateway.fetchCustomerToken(mandate.razorpayCustomerId, tokenId);
     const details = token.recurring_details;
 
     const mapped = mapRecurringStatus(details?.status);
@@ -456,7 +458,7 @@ export async function prepareDebit(params: {
 
   let order;
   try {
-    order = await paymentService.createReservePayDebitOrder({
+    order = await gateway.createReservePayDebitOrder({
       amountPaise,
       receipt: params.receipt,
       notes: params.notes,
@@ -517,7 +519,7 @@ export async function executeDebit(
 
   let payment;
   try {
-    payment = await paymentService.createReservePayDebitPayment({
+    payment = await gateway.createReservePayDebitPayment({
       amountPaise: debit.amountPaise,
       orderId: debit.razorpayOrderId,
       customerId: mandate.razorpayCustomerId,
@@ -691,7 +693,7 @@ export async function revokeMandate(userId: string, mandateId: string) {
 
   if (mandate.razorpayTokenId) {
     try {
-      await paymentService.cancelReservePayToken(
+      await gateway.cancelReservePayToken(
         mandate.razorpayCustomerId,
         mandate.razorpayTokenId
       );

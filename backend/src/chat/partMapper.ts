@@ -250,6 +250,12 @@ export function toolResultToPart(
           actions: ["setup"],
         };
       }
+      // A block still awaiting approval reaches here as `revoked`, since ChatMandate.status has
+      // no `pending`. Rendering that widget would tell the customer their approval failed and
+      // offer them "renew" mid-approval. No widget: the setup widget is already on screen with
+      // its own approve/retry buttons, and the model's text carries the "not yet" itself.
+      if (data.awaitingApproval) return null;
+
       return {
         type: "reserve_pay_status",
         partId: nextPartId("reserve"),

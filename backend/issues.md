@@ -32,6 +32,91 @@ Razorpay's description verbatim, and no mandate can reach `confirmed`. Everythin
 need the gateway is verified working: validation, the guard chain and its error codes, the
 one-live-mandate-per-user index, abandoned-mandate expiry, audit rows, and the webhook router.
 
+### Re-probed 2026-09-02 — UPI is enabled now, the S2S API is still not
+
+Checked again after UPI was reported enabled on the account. **UPI is on; the actual blocker is
+unchanged.** `GET /v1/methods` for this key now reports `upi: true`, `upi_intent: true`,
+`recurring.upi: true`, and lists `recurring.upi_autopay` — so item 2 below looks satisfied.
+
+But every S2S payment-creation route is still absent for this account:
+
+| Call | Result |
+|---|---|
+| `POST /v1/payments/create/json` (SBMD auth body) | **400** "The requested URL was not found on the server." |
+| `POST /v1/payments/create/json` (plain UPI collect) | **400** same |
+| `POST /v1/payments/create/upi` | **400** same |
+| `POST /v1/payments/validate/vpa` | **400** same |
+| `POST /v1/customers` | 200 |
+| `POST /v1/orders` with `token.type: single_block_multiple_debit` | 200 |
+| `GET /v1/payments` | 200 |
+| `POST /v1/tokens` | 400 "The card field is required." — route exists, body validated |
+| `POST /v1/payments/create/ajax` | 401 "Authentication failed" |
+
+The last two rows are what make this conclusive. The same credentials that 404 on
+`create/json` reach `/tokens` and `/payments` fine, and `create/ajax` answers **401**, not 404 —
+so the 404s are route-level entitlement, not authentication and not our payload. Enabling UPI as
+a *payment method* does not enable the *server-to-server API* used to initiate one; they are
+separate entitlements and only the second one blocks us.
+
+**Still outstanding with Razorpay support:** the **S2S JSON API** (`/payments/create/json`) —
+and `save_vpa`, whose sibling endpoint `/payments/validate/vpa` is 404 for the same reason.
+
+### Narrowed further: `/payments/create/recurring` works, `/payments/create/json` does not
+
+Probing the SDK's `razorpay.payments.createRecurringPayment` turned up a second endpoint we had
+never tried, and it is **provisioned on both the test and live keys**:
+
+| Same request body, two endpoints | Response | `source` |
+|---|---|---|
+| `POST /payments/create/recurring` | `"No db records found."` — it looked the token up | `business` |
+| `POST /payments/create/json` | `"The requested URL was not found on the server."` | `internal` |
+
+`create/recurring` does real per-field validation (`"contact: cannot be blank"`), real id-format
+validation (`"BOGUS1234567 is not a valid id"`), and then a token lookup. It returns exactly the
+`{razorpay_payment_id, razorpay_order_id, razorpay_signature}` shape `createReservePayDebitPayment`
+already expects, so `verifyPaymentSignature` needs no change.
+
+**So the debit half of the rail has a working endpoint.** The authorisation half does not: sent
+with no `token` and `upi.flow: intent`, `create/recurring` falls back to the same
+`"URL not found"`, because Razorpay routes an initial recurring payment to the unprovisioned S2S
+JSON handler. No authorisation means no token, so the working debit endpoint has nothing to spend
+and the rail stays blocked end to end.
+
+**Follow-up, deliberately not done yet:** switch `createReservePayDebitPayment` from
+`/payments/create/json` to `/payments/create/recurring`. It is a one-line change and the endpoint
+is verified reachable, but it cannot be tested until authorisation works, so it is recorded here
+rather than applied blind.
+
+## Reserve Pay simulator (`RESERVE_PAY_SIM`)
+
+Because the authorisation endpoint is unreachable, the rail is served in demo mode by a local
+simulator: `services/reservePayGateway.ts` picks `paymentService` (real) or
+`reservePaySimService` (simulated) from one env flag, and `reservePayService` — every guard,
+reservation, audit write and status mapping — is unchanged either way.
+
+```
+RESERVE_PAY_SIM=true bun run dev        # test keys only; boot refuses against rzp_live_
+```
+
+Both signatures stay real: the simulated debit is HMAC-signed with `RAZORPAY_KEY_SECRET` so
+`verifyPaymentSignature` genuinely passes, and replayed webhooks are signed with
+`RAZORPAY_WEBHOOK_SECRET` so `verifyWebhookSignature` does too. Simulated ids all carry a `_sim_`
+segment. State lives in `sim_tokens` / `sim_payments`, which act as the pretend gateway that
+`syncMandate` reconciles against.
+
+Controls, all scoped to the caller's own mandate: `POST /api/reserve-pay/sim/approve` (skip the
+approval wait), `POST|DELETE /api/reserve-pay/sim/debit-failure` (arm a one-shot decline),
+`POST /api/reserve-pay/sim/token-status` (drive the gateway-side status; the mandate then moves
+through the real `syncMandate`), `GET /api/reserve-pay/sim/state`.
+
+**Switching back** when Razorpay grants S2S access: drop `RESERVE_PAY_SIM`. Nothing else changes
+— no real Razorpay call was removed or edited to build this.
+
+End-to-end behaviour is unchanged and correct: `POST /api/reserve-pay/mandates` returns
+`502 PAYMENT_GATEWAY_ERROR` with Razorpay's description verbatim, and the mandate row lands in
+`failed` rather than being left orphaned as `pending` — `GET /mandates/current` returns
+`{"mandate": null}` afterwards, so the slot is released and the next attempt is unblocked.
+
 ## ~~Bug: "what's in my cart" answered in text, never the cart widget~~ — resolved
 
 Found during frontend integration testing: asking the chat "What is in my cart?" got a plain-text

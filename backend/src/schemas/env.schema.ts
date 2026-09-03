@@ -9,6 +9,32 @@ export const envSchema = z.object({
   RAZORPAY_WEBHOOK_SECRET: z
     .string()
     .min(1, "RAZORPAY_WEBHOOK_SECRET is required"),
+  // Logs every Razorpay request and its verbatim reply to the console. Diagnostics only — it
+  // prints request bodies, including customer contact details.
+  RAZORPAY_DEBUG: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+
+  // Serves the Reserve Pay rail from a local simulator instead of Razorpay — the S2S payment API
+  // is not provisioned on the account, so no mandate can otherwise be authorised. Config rejects
+  // this against a live key. z.coerce.boolean() is wrong here: it reads "false" as true.
+  RESERVE_PAY_SIM: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+  // How long a simulated block stays `pending` before it counts as approved. Sized against chat,
+  // not against the API: one chat turn measures ~6s, so a shorter window is already over by the
+  // customer's first "I've approved it" and the pending state is never seen. Set 0 to confirm
+  // instantly.
+  RESERVE_PAY_SIM_APPROVAL_DELAY_MS: z.coerce.number().int().min(0).default(20000),
+  // Replays the webhook Razorpay would have sent, correctly signed, so the async reconciliation
+  // path runs rather than only the polling path.
+  RESERVE_PAY_SIM_WEBHOOKS: z
+    .string()
+    .default("true")
+    .transform((v) => v === "true" || v === "1"),
+  RESERVE_PAY_SIM_WEBHOOK_DELAY_MS: z.coerce.number().int().min(0).default(500),
   CORS_ORIGIN: z.string().default("http://localhost:3000"),
   // ADMIN_PASSWORD is the shared operator secret exchanged at POST /api/admin/login.
   // ADMIN_JWT_SECRET is distinct from JWT_SECRET, so a leaked user-token secret cannot mint an

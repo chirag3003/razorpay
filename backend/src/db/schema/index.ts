@@ -9,3 +9,4 @@ export * from "./cart-mandates";
 export * from "./audit-log";
 export * from "./conversations";
 export * from "./oauth";
+export * from "./sim-gateway";

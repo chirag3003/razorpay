@@ -68,6 +68,13 @@ app.onError((err, c) => {
   return c.json({ error: "Internal server error", code: "INTERNAL_ERROR" }, 500);
 });
 
+if (env.RESERVE_PAY_SIM) {
+  console.log(
+    "\n  RESERVE PAY SIMULATOR IS ON — mandates and debits are fake, no money moves.\n" +
+      `  Approval lands ${env.RESERVE_PAY_SIM_APPROVAL_DELAY_MS}ms after setup. Controls: /api/reserve-pay/sim/*\n`
+  );
+}
+
 console.log(`backend listening on http://localhost:${env.PORT}`);
 
 // Bun's server-config export — `bun src/server.ts` starts from this, no Bun.serve() call needed.

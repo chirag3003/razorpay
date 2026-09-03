@@ -205,7 +205,20 @@ const checkReservePayStatus = defineTool({
     if (!live) return { state: "none" as const };
 
     const mandate = await reservePayService.getMandate(ctx.userId, live.id);
-    return { state: "found" as const, mandate: toAgentMandate(mandate) };
+
+    // ChatMandate.status has no `pending`, so toAgentMandate collapses an unapproved block to
+    // `revoked` — which reads as "the customer's approval failed" and sends the model into
+    // telling them to start over. State it separately so polling behaves like polling.
+    const awaitingApproval = mandate.status === "pending";
+
+    return {
+      state: "found" as const,
+      mandate: toAgentMandate(mandate),
+      awaitingApproval,
+      ...(awaitingApproval
+        ? { hint: "Not approved yet. Ask the customer to approve in their UPI app, then poll again." }
+        : {}),
+    };
   },
 });
 

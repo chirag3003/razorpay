@@ -204,6 +204,17 @@ export async function createReservePayAuthPayment(params: {
 }) {
   let response: AuthPaymentResponse;
   try {
+    // await razorpay.payments.createPaymentJson({
+    //   amount: params.amountPaise,
+    //   currency: CURRENCY,
+    //   order_id: params.orderId,
+    //   customer_id: params.customerId,
+    //   contact: params.contact,
+    //   email: params.email,
+    //   method: "upi",
+      
+    // })
+    await razorpay.payments.createRecurringPayment
     response = await razorpay.api.post<unknown, AuthPaymentResponse>({
       url: "/payments/create/json",
       data: {
@@ -247,6 +258,7 @@ export async function createReservePayDebitOrder(params: {
         payment_capture: true,
         receipt: params.receipt,
         notes: params.notes,
+
       },
     });
   } catch (err) {
@@ -265,6 +277,21 @@ export async function createReservePayDebitPayment(params: {
   description?: string;
   notes?: Record<string, string>;
 }) {
+  // await razorpay.payments.createRecurringPayment({
+  //   amount: params.amountPaise,
+  //   currency: CURRENCY,
+  //   order_id: params.orderId,
+  //   customer_id: params.customerId,
+  //   token: params.tokenId,
+  //   recurring: true,
+  //   contact: params.contact,
+  //   email: params.email,
+  //   description: params.description,
+  //   notes: {},
+  //   authentication: {
+  //     authentication_channel: "upi",
+  //   },
+  // })
   return razorpay.api.post<unknown, DebitPaymentResponse>({
     url: "/payments/create/json",
     data: {

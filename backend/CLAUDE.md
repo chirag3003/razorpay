@@ -162,6 +162,14 @@ a written rule.
   `expire_at ≤ RESERVE_PAY_MAX_EXPIRY_DAYS`) → Create Authorisation Payment (`upi.flow: intent`)
   → Fetch Token → subsequent debits are new Orders **without** the `notification` object +
   Initiate Payment referencing the stored token.
+- **The gateway behind that flow is swappable.** `reservePayService` calls
+  `services/reservePayGateway.ts`, not `paymentService` directly, for the eight Reserve Pay
+  gateway calls. The gateway picks `paymentService` (real) or `reservePaySimService` (a local
+  simulator) from `RESERVE_PAY_SIM`, because Razorpay has not provisioned
+  `/payments/create/json` on this account — see `issues.md`. Everything that makes the rail
+  *bounded* — guard chain, the conditional-UPDATE reservation, audit writes, status mapping —
+  lives in `reservePayService` and runs identically either way. **Add a new gateway call to the
+  `ReservePayGateway` type, not to `reservePayService` as a direct paymentService import.**
 - **One Reserve Pay block per (customer, simulated-merchant) pair** — simulate multiple
   merchants as multiple tokens for the same customer within the one Razorpay test account.
 - **Verification chain, enforced in `verifyAgentToken.ts` middleware, in this order:** token
