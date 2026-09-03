@@ -37,9 +37,33 @@ const oauthMetadata: OAuthMetadata = {
 
 export const oauthRoutes = new Hono<AppEnv>();
 
+const issuerHost = new URL(env.OAUTH_ISSUER_URL).host;
+const warnedHosts = new Set<string>();
+
+/**
+ * Every URL in both metadata documents is built from OAUTH_ISSUER_URL, so serving them on a
+ * different host hands the client endpoints it cannot reach. The symptom is remote and unhelpful
+ * — the client reports it "couldn't register" and no request ever arrives here — so say it
+ * locally instead. Once per host: a client re-fetches discovery several times per attempt.
+ */
+function warnOnHostMismatch(req: Request) {
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  if (!host || host === issuerHost || warnedHosts.has(host)) return;
+
+  warnedHosts.add(host);
+  console.warn(
+    `\n[oauth] Discovery was requested via ${host}, but OAUTH_ISSUER_URL is ${env.OAUTH_ISSUER_URL}.\n` +
+      `[oauth] The metadata below advertises ${issuerHost}, which that client probably cannot reach —\n` +
+      `[oauth] registration and token exchange will fail with nothing reaching this server.\n` +
+      `[oauth] Set OAUTH_ISSUER_URL to the externally reachable origin and restart.\n`
+  );
+}
+
 // RFC 9728 protected-resource and RFC 8414 authorization-server metadata, both from one handler:
 // it inspects the path itself and returns undefined for anything else.
 oauthRoutes.get("/.well-known/*", (c) => {
+  warnOnHostMismatch(c.req.raw);
+
   return (
     oauthMetadataResponse(c.req.raw, {
       oauthMetadata,

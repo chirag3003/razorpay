@@ -19,7 +19,11 @@
 // 2 -> 3: CartSummaryPart gained `lines`. Without them the widget could only ever show totals,
 // while systemPrompt.ts told the model to stay quiet and "let its widget show the detail" — so a
 // customer asking what was in their cart got neither.
-export const CHAT_PROTOCOL_VERSION = 3;
+//
+// 3 -> 4: ReservePaySetupPart.intent gained `links`, the per-app UPI deep links. Optional, unlike
+// `lines` above: stored parts in chat_messages are replayed verbatim, so a required field breaks
+// every transcript written before it existed.
+export const CHAT_PROTOCOL_VERSION = 4;
 
 /** Integer rupees. */
 export type Rupees = number;
@@ -98,6 +102,20 @@ export type ChatErrorCode =
 
 export type ReserveMode = "setup" | "top_up";
 export type ReserveStep = "choose_amount" | "awaiting_approval" | "confirmed" | "failed";
+
+/**
+ * The UPI mandate link, per app. Structurally identical to utils/upi-intent.ts's own type, redeclared
+ * here because this file is mirrored into web/ and must not import from the rest of the backend.
+ */
+export type UpiIntentLinks = {
+  generic: string;
+  gpay: string;
+  phonepe: string;
+  paytm: string;
+  bhim: string;
+  cred: string;
+  whatsapp: string;
+};
 
 export type WidgetAction =
   | { type: "quick_reply"; text: string }
@@ -218,7 +236,13 @@ export type ReservePaySetupPart = PartBase & {
   maxAmount: Rupees;
   validityDays: number;
   amount?: Rupees;
-  intent?: { upiUri: string; expiresAt: string };
+  intent?: {
+    upiUri: string;
+    expiresAt: string;
+    // One deep link per UPI app, same query string, differing only in scheme. Optional because
+    // transcripts stored before this field replay without it — the widget falls back to upiUri.
+    links?: UpiIntentLinks;
+  };
   failure?: { code: ChatErrorCode; message: string };
 };
 

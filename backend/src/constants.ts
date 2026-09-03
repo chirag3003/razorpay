@@ -87,18 +87,30 @@ export const RESERVE_PAY_MAX_EXPIRY_DAYS = 90;
 // Not a regulatory limit — blocking ₹20 costs a UPI PIN approval to cover less than one order.
 export const RESERVE_PAY_MIN_AMOUNT = 500;
 
+// Every rung is a multiple of ₹500. Fixed rather than computed so the customer sees the same
+// recognisable amounts each time instead of a figure derived from whatever is in their cart.
+const RESERVE_AMOUNT_LADDER = [1_000, 2_000, 3_000, 5_000, RESERVE_PAY_MAX_AMOUNT] as const;
+
+/** How many rungs to offer. More than four turns a quick choice into a form. */
+const RESERVE_AMOUNT_OPTIONS = 4;
+
 /**
- * Block sizes for a cart total, mirroring web/lib/chat/format.ts `suggestReserveAmount`. Roughly
- * three orders' worth, rounded to ₹500, clamped to the legal range — asking someone to block the
- * ₹10,000 ceiling to buy ₹380 of tomatoes is how a checkout gets abandoned.
+ * Block sizes offered for a given cart total. Every option is strictly above that total — a block
+ * that cannot cover the order in hand is worse than useless, since the customer spends a UPI PIN
+ * to still be unable to pay. Empty when the cart is at or above the ₹10,000 ceiling: no legal
+ * block covers it, and the caller must fall back to web checkout rather than offer a short one.
  */
 export function suggestReserveAmounts(cartTotal: number): number[] {
-  const target = Math.ceil((cartTotal * 3) / 500) * 500;
-  const primary = Math.min(RESERVE_PAY_MAX_AMOUNT, Math.max(1_000, target));
+  const usable = RESERVE_AMOUNT_LADDER.filter(
+    (amount) =>
+      amount > cartTotal &&
+      amount >= RESERVE_PAY_MIN_AMOUNT &&
+      amount <= RESERVE_PAY_MAX_AMOUNT
+  );
 
-  return [...new Set([primary, primary * 2, RESERVE_PAY_MAX_AMOUNT])]
-    .filter((amount) => amount >= RESERVE_PAY_MIN_AMOUNT && amount <= RESERVE_PAY_MAX_AMOUNT)
-    .sort((a, b) => a - b);
+  // Cheapest rungs plus the ceiling, not simply the first four: the smallest workable block is
+  // the common choice, and the ceiling is the one people reach for to avoid topping up later.
+  return [...new Set([...usable.slice(0, RESERVE_AMOUNT_OPTIONS - 1), ...usable.slice(-1)])];
 }
 
 // Short of the 90-day ceiling: expire_at is an absolute timestamp, and asking for exactly the

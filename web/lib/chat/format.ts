@@ -32,13 +32,3 @@ export function isMandateUsable(mandate: ChatMandate | null): mandate is ChatMan
   if (mandate.status !== "active") return false;
   return new Date(mandate.expiredAt).getTime() > Date.now();
 }
-
-/**
- * Reserve Pay caps a block at ₹10,000, so a sensible default is a few orders'
- * worth — not the ceiling. Asking someone to block ₹10k to buy ₹380 of
- * tomatoes is how you lose the conversion.
- */
-export function suggestReserveAmount(cartTotal: Rupees): Rupees {
-  const target = Math.ceil((cartTotal * 3) / 500) * 500;
-  return Math.min(10_000, Math.max(1_000, target));
-}

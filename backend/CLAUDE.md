@@ -217,6 +217,41 @@ identity source.
   smaller, explicitly-scoped-down step, same simplification precedent as `ToolContext.actor`
   existing well before anything checked it.
 
+### Connecting to Claude Desktop (or any remote MCP client)
+
+Remote clients require https, so the backend needs a tunnel. Order matters:
+
+1. Start the backend and `ngrok http 4000`.
+2. Set **`OAUTH_ISSUER_URL`** to the https URL ngrok prints.
+3. **Restart the backend.** `dotenv/config` reads `.env` once at boot and `bun --watch` does not
+   watch `.env`, so editing it alone changes nothing.
+4. Add the connector in Claude Desktop pointing at `https://<host>/api/mcp`.
+
+**`OAUTH_ISSUER_URL` is the whole game.** Every URL in both discovery documents is built from it
+(`routes/oauth.ts`), and nothing derives them from the incoming request. Left on localhost, the
+client is told to register at `http://localhost:4000/oauth/register`, cannot reach it, and reports
+a sign-in failure — while the backend log shows discovery succeeding and then simply no
+`POST /oauth/register`. **That missing line is the signature of this bug.** The `/.well-known/*`
+handler now warns when the request host and `OAUTH_ISSUER_URL` disagree, so it says so locally.
+
+Other things worth knowing before you debug the wrong thing:
+
+- **Leave `PUBLIC_APP_URL` on localhost.** `/oauth/authorize` redirects to `web/`'s
+  `/agent-connect` consent page in *your own browser* on this machine, so it must stay local — and
+  `web/` has to be running on `:3000` for the approval step to render at all.
+- **A free ngrok URL changes on every restart.** Each new URL means a new `OAUTH_ISSUER_URL`, a
+  backend restart, and re-adding the connector, since the client caches what it discovered. A
+  reserved ngrok domain removes the loop.
+- **ngrok's free interstitial** appears on the first browser navigation, and `/oauth/authorize` is
+  one. Click through; a request header cannot suppress it for a top-level navigation.
+- **`GET /.well-known/oauth-protected-resource` returning 404 is correct.** RFC 9728 puts a
+  resource's metadata at the path-suffixed location — `/.well-known/oauth-protected-resource/api/mcp`
+  — which is what the SDK serves. Clients probe the bare path as a fallback; ignore it.
+- **`CORS_ORIGIN` does not affect discovery.** The SDK sets `Access-Control-Allow-Origin: *` on
+  both metadata documents itself. It would only matter for a browser-side client.
+- Connecting a real agent makes `proposal.md` **S1** live rather than theoretical: MCP exposes
+  every tool, `place_order` and `start_reserve_pay_setup` included, with no scope or spend cap.
+
 ---
 
 ## Conventions

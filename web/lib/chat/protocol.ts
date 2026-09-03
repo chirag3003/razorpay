@@ -16,7 +16,11 @@ import type { AddressFormValues } from "@/lib/validation";
 // 2 -> 3: CartSummaryPart gained `lines`, so the cart widget can list items instead of only
 // totals. The backend's system prompt tells the model not to describe cart contents in text, so
 // this widget is the only place they appear.
-export const CHAT_PROTOCOL_VERSION = 3;
+//
+// 3 -> 4: ReservePaySetupPart.intent gained `links`, the per-app UPI deep links, so the approval
+// step renders one button per app instead of a raw upi:// string. Optional, unlike `lines`:
+// stored transcripts replay verbatim and predate the field.
+export const CHAT_PROTOCOL_VERSION = 4;
 
 /** Integer rupees. */
 export type Rupees = number;
@@ -127,6 +131,17 @@ export type WidgetAction =
 export type ReserveMode = "setup" | "top_up";
 export type ReserveStep = "choose_amount" | "awaiting_approval" | "confirmed" | "failed";
 
+/** The UPI mandate link, per app. Same query string throughout; only the scheme differs. */
+export type UpiIntentLinks = {
+  generic: string;
+  gpay: string;
+  phonepe: string;
+  paytm: string;
+  bhim: string;
+  cred: string;
+  whatsapp: string;
+};
+
 /** Ops the agent may ask the client to run. Allowlisted — see chat-store. */
 export type ClientOp =
   | { kind: "cart.add"; productId: string; qty: number }
@@ -227,7 +242,13 @@ export type ReservePaySetupPart = PartBase & {
   maxAmount: Rupees;
   validityDays: number;
   amount?: Rupees;
-  intent?: { upiUri: string; expiresAt: string };
+  intent?: {
+    upiUri: string;
+    expiresAt: string;
+    // Optional: transcripts stored before this field replay without it, so the widget falls back
+    // to upiUri rather than throwing.
+    links?: UpiIntentLinks;
+  };
   failure?: { code: ChatErrorCode; message: string };
 };
 

@@ -48,7 +48,11 @@ function describeAction(action: WidgetActionInput): string {
       return "[UI] The customer confirmed the order. Place it now with place_order using the open quoteId.";
 
     case "reserve_pay.choose_amount":
-      return `[UI] The customer chose to reserve ₹${action.amount} (${action.mode}). Call start_reserve_pay_setup with that amount.`;
+      // mode carries the authorisation: top_up is the customer agreeing to give up their current
+      // block, which is the only thing that justifies replaceExisting.
+      return action.mode === "top_up"
+        ? `[UI] The customer chose to replace their reserved balance with ₹${action.amount}. Call start_reserve_pay_setup with that amount and replaceExisting: true.`
+        : `[UI] The customer chose to reserve ₹${action.amount}. Call start_reserve_pay_setup with that amount.`;
 
     case "reserve_pay.intent_opened":
       return "[UI] The customer opened the UPI approval link. Poll check_reserve_pay_status and tell them what you see.";
@@ -59,11 +63,13 @@ function describeAction(action: WidgetActionInput): string {
     case "reserve_pay.cancel":
       return "[UI] The customer cancelled setting up a reserved balance. Don't push it; offer normal web checkout instead.";
 
+    // A block cannot be increased, so both of these mean "replace". Offer amounts first — the
+    // customer picking one is what authorises giving up the block they already have.
     case "reserve_pay.top_up":
-      return "[UI] The customer wants to top up their reserved balance. Work out a sensible amount from their cart total and call start_reserve_pay_setup.";
+      return "[UI] The customer wants to top up their reserved balance. Call offer_reserve_pay_amounts and let them choose; topping up replaces their current block, so their remaining balance is returned and they approve the new one with their PIN.";
 
     case "reserve_pay.renew":
-      return "[UI] The customer wants to set up a fresh reserved balance. Call start_reserve_pay_setup.";
+      return "[UI] The customer wants a fresh reserved balance. Call offer_reserve_pay_amounts and let them choose.";
 
     case "fallback.web_checkout":
       return "[UI] The customer chose to check out on the website instead. Point them at the cart page and stop pushing chat checkout.";

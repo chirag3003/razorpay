@@ -1,12 +1,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { Check, Copy, Loader2, ShieldCheck, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn, formatPrice } from "@/lib/utils";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import type { ReservePaySetupPart, WidgetAction } from "@/lib/chat/protocol";
+import type { ReservePaySetupPart, UpiIntentLinks, WidgetAction } from "@/lib/chat/protocol";
+
+/**
+ * Order matters — these render as a grid, most-used first. Keys are `UpiIntentLinks` fields minus
+ * `generic`, which is handled separately as the "any UPI app" fallback.
+ */
+const UPI_APPS: { key: Exclude<keyof UpiIntentLinks, "generic">; label: string }[] = [
+  { key: "gpay", label: "Google Pay" },
+  { key: "phonepe", label: "PhonePe" },
+  { key: "paytm", label: "Paytm" },
+  { key: "bhim", label: "BHIM" },
+  { key: "cred", label: "CRED" },
+  { key: "whatsapp", label: "WhatsApp" },
+];
 
 /**
  * The one human step in Reserve Pay: the customer approves a block in their UPI
@@ -110,6 +124,8 @@ function AwaitingApproval({
 }) {
   const [dots, setDots] = useState(0);
   const uri = part.intent?.upiUri ?? "";
+  // Absent on transcripts stored before per-app links existed; those fall back to the copy box.
+  const links = part.intent?.links;
 
   useEffect(() => {
     const id = setInterval(() => setDots((d) => (d + 1) % 4), 500);
@@ -127,22 +143,50 @@ function AwaitingApproval({
       </p>
 
       {isDesktop ? (
-        // No UPI app on a desktop — hand over the URI instead of a dead link.
-        <div className="mb-2 flex items-center gap-2 rounded-lg border bg-muted/40 p-2">
-          <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
-            {uri}
-          </code>
+        // A upi:// link cannot open anything on a desktop, so hand the phone the mandate instead
+        // — scanning is how UPI desktop checkout works everywhere else.
+        <div className="mb-3 flex flex-col items-center gap-2 rounded-lg border bg-muted/30 p-3">
+          <div className="rounded-md bg-white p-2">
+            <QRCodeSVG value={uri} size={132} level="M" />
+          </div>
+          <p className="text-xs text-muted-foreground">Scan with any UPI app</p>
           <Button
             type="button"
-            size="icon-sm"
+            size="sm"
             variant="ghost"
-            aria-label="Copy UPI link"
             onClick={() => {
               void navigator.clipboard?.writeText(uri);
               toast.success("UPI link copied");
             }}
           >
             <Copy className="size-4" />
+            Copy link instead
+          </Button>
+        </div>
+      ) : links ? (
+        <div className="mb-3">
+          <div className="mb-2 grid grid-cols-2 gap-2">
+            {UPI_APPS.map((app) => (
+              <Button
+                key={app.key}
+                variant="outline"
+                nativeButton={false}
+                render={<a href={links[app.key]} />}
+                onClick={() => onAction({ type: "reserve_pay.intent_opened" })}
+              >
+                {app.label}
+              </Button>
+            ))}
+          </div>
+          {/* The generic scheme lets the OS offer whatever the customer actually has installed. */}
+          <Button
+            className="w-full"
+            nativeButton={false}
+            render={<a href={links.generic} />}
+            onClick={() => onAction({ type: "reserve_pay.intent_opened" })}
+          >
+            <Smartphone className="size-4" />
+            Any UPI app
           </Button>
         </div>
       ) : (

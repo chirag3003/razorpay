@@ -173,6 +173,17 @@ export const startReservePaySetupSchema = z.object({
     .max(RESERVE_PAY_MAX_EXPIRY_DAYS)
     .optional()
     .describe(`How long the block stays usable. Max ${RESERVE_PAY_MAX_EXPIRY_DAYS} days.`),
+  replaceExisting: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "Set true ONLY when the customer has asked to top up or replace their reserved balance. " +
+        "A block cannot be increased, so this revokes their current one first — its remaining " +
+        "balance returns to them and they must approve the new block with their UPI PIN again. " +
+        "Because the old balance is released, the new amount must cover the whole cart, not just " +
+        "the shortfall. Never set this merely to get past an 'already has an active mandate' error."
+    ),
 });
 
 export const prepareOrderSchema = z.object({

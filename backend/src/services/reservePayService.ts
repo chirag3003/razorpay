@@ -108,7 +108,7 @@ async function ensureRazorpayCustomer(user: typeof users.$inferSelect) {
  */
 export async function createMandate(
   userId: string,
-  input: { amountInRupees: number; expiryDays?: number }
+  input: { amountInRupees: number; expiryDays?: number; replaceExisting?: boolean }
 ) {
   // Re-asserted rather than trusting the Zod schema: chat and MCP callers reach this service
   // without passing a route validator.
@@ -122,6 +122,15 @@ export async function createMandate(
     input.expiryDays ?? RESERVE_PAY_DEFAULT_EXPIRY_DAYS,
     RESERVE_PAY_MAX_EXPIRY_DAYS
   );
+
+  // A block cannot be topped up — SBMD blocks a fixed amount once — so "top up" means revoking
+  // the old block and creating a bigger one. Revoke first because one_live_per_user forbids two,
+  // which also means an abandoned approval leaves the customer with no block but their money
+  // back: the safe side, and the same trade releaseAbandonedMandate already makes.
+  if (input.replaceExisting) {
+    const live = await getLiveMandate(userId);
+    if (live) await revokeMandate(userId, live.id, { reason: "replaced_by_top_up" });
+  }
 
   await releaseAbandonedMandate(userId);
 
@@ -682,7 +691,11 @@ export async function attachOrderToDebit(debitId: string, orderId: string) {
  * alternative is a mandate the customer can neither use nor cancel. Funds still held are
  * auto-reversed by Razorpay 10 minutes before expiry.
  */
-export async function revokeMandate(userId: string, mandateId: string) {
+export async function revokeMandate(
+  userId: string,
+  mandateId: string,
+  options: { reason?: "customer_request" | "replaced_by_top_up" } = {}
+) {
   const mandate = await requireOwnedMandate(userId, mandateId);
 
   if (!isLive(mandate)) {
@@ -727,6 +740,9 @@ export async function revokeMandate(userId: string, mandateId: string) {
       razorpayTokenId: mandate.razorpayTokenId,
       releasedPaise: cancellationError ? 0 : remainingPaise(mandate),
       cancellationError,
+      // Separates "the customer cancelled" from "we cancelled to make room for a bigger block",
+      // which otherwise look identical in the audit trail.
+      reason: options.reason ?? "customer_request",
     },
   });
 

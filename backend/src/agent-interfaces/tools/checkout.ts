@@ -1,4 +1,10 @@
-import { deliverySlotLabel } from "../../constants";
+import {
+  deliverySlotLabel,
+  RESERVE_PAY_DEFAULT_EXPIRY_DAYS,
+  RESERVE_PAY_MAX_AMOUNT,
+  RESERVE_PAY_MIN_AMOUNT,
+  suggestReserveAmounts,
+} from "../../constants";
 import * as addressService from "../../services/addressService";
 import * as auditService from "../../services/auditService";
 import * as cartService from "../../services/cartService";
@@ -168,13 +174,57 @@ const getPaymentStatus = defineTool({
   },
 });
 
+const offerReservePayAmounts = defineTool({
+  name: "offer_reserve_pay_amounts",
+  description:
+    "Show the customer a choice of reserve amounts. Call this whenever they need a reserved " +
+    "balance — never pick the amount yourself. Blocks nothing: it renders the options and waits " +
+    "for the customer to tap one, which is what tells you the amount for start_reserve_pay_setup. " +
+    "Works for a top-up too: the options cover the whole cart, since replacing a block returns " +
+    "the old one's balance to the customer.",
+  input: emptySchema,
+  readOnly: true,
+  handler: async (ctx) => {
+    const cartId = await cartService.getOrCreateActiveCartId(ctx.userId);
+    const cart = await cartService.getCartWithTotals(cartId);
+    const suggestedAmounts = suggestReserveAmounts(cart.total);
+
+    // Replacing an existing block releases its balance back to the customer, so the options are
+    // sized against the whole cart either way — never against the shortfall.
+    const replacing = (await reservePayService.getLiveMandate(ctx.userId)) !== null;
+
+    // Every legal block is capped at RESERVE_PAY_MAX_AMOUNT, so a cart above it can never be
+    // covered. Say so rather than offering an amount that buys a PIN approval and still fails.
+    if (suggestedAmounts.length === 0) {
+      toolError(
+        "reserve_insufficient",
+        `This order is ₹${cart.total}, above the ₹${RESERVE_PAY_MAX_AMOUNT} limit for a reserved balance.`,
+        { hint: "Offer web checkout for this order instead." }
+      );
+    }
+
+    return {
+      suggestedAmounts,
+      cartTotal: cart.total,
+      minAmount: RESERVE_PAY_MIN_AMOUNT,
+      maxAmount: RESERVE_PAY_MAX_AMOUNT,
+      validityDays: RESERVE_PAY_DEFAULT_EXPIRY_DAYS,
+      mode: replacing ? ("top_up" as const) : ("setup" as const),
+      nextStep: replacing
+        ? "The widget shows the options. Wait for the customer to choose, then call start_reserve_pay_setup with that amount and replaceExisting: true."
+        : "The widget shows the options. Wait for the customer to choose — do not call start_reserve_pay_setup yet.",
+    };
+  },
+});
+
 const startReservePaySetup = defineTool({
   name: "start_reserve_pay_setup",
   description:
     "Begin setting up a reserved UPI balance. Returns a UPI deep link the customer must open and " +
     "approve with their PIN — this is the one step in the whole flow that needs a human. After " +
     "sending them the link, poll check_reserve_pay_status until it reports active. The customer " +
-    "can only have one balance at a time.",
+    "can only have one balance at a time, so topping up is a replacement: pass replaceExisting " +
+    "to revoke the current block and create a bigger one. Only do that when they asked for it.",
   input: startReservePaySetupSchema,
   readOnly: false,
   handler: async (ctx, input) => {
@@ -451,6 +501,7 @@ export const checkoutTools = [
   createAddress,
   listDeliverySlots,
   getPaymentStatus,
+  offerReservePayAmounts,
   startReservePaySetup,
   checkReservePayStatus,
   prepareOrder,

@@ -267,6 +267,22 @@ export function toolResultToPart(
         actions: data.mandate.status === "active" ? [] : ["renew", "use_web_checkout"],
       };
 
+    // Offers amounts without creating anything. The customer picks, and only then does
+    // start_reserve_pay_setup below block any funds.
+    case "offer_reserve_pay_amounts":
+      return {
+        type: "reserve_pay_setup",
+        partId: nextPartId("setup"),
+        // top_up when a block already exists, so the widget says "Top up your reserve" rather
+        // than offering a first-time setup the customer has already done.
+        mode: data.mode === "top_up" ? "top_up" : "setup",
+        step: "choose_amount",
+        suggestedAmounts: data.suggestedAmounts ?? [],
+        minAmount: RESERVE_PAY_MIN_AMOUNT,
+        maxAmount: RESERVE_PAY_MAX_AMOUNT,
+        validityDays: RESERVE_PAY_DEFAULT_EXPIRY_DAYS,
+      };
+
     case "start_reserve_pay_setup": {
       const amount = typeof args.amountInRupees === "number" ? args.amountInRupees : undefined;
       return {
@@ -284,6 +300,9 @@ export function toolResultToPart(
           ? {
               upiUri: data.intentUrl,
               expiresAt: data.mandate?.expiredAt ?? new Date().toISOString(),
+              // Already built by the tool via buildUpiIntentLinks — the widget turns these into
+              // one button per UPI app instead of showing a raw upi:// string.
+              links: data.intentLinks ?? undefined,
             }
           : undefined,
       };
