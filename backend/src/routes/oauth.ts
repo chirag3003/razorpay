@@ -3,6 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import { oauthMetadataResponse } from "@modelcontextprotocol/server";
 import type { OAuthMetadata } from "@modelcontextprotocol/server";
 import { env } from "../config/env";
+import { logger } from "../logger";
 import { requireAuth } from "../middleware/auth";
 import * as oauthService from "../services/oauthService";
 import { OAuthProtocolError } from "../services/oauthService";
@@ -51,11 +52,10 @@ function warnOnHostMismatch(req: Request) {
   if (!host || host === issuerHost || warnedHosts.has(host)) return;
 
   warnedHosts.add(host);
-  console.warn(
-    `\n[oauth] Discovery was requested via ${host}, but OAUTH_ISSUER_URL is ${env.OAUTH_ISSUER_URL}.\n` +
-      `[oauth] The metadata below advertises ${issuerHost}, which that client probably cannot reach —\n` +
-      `[oauth] registration and token exchange will fail with nothing reaching this server.\n` +
-      `[oauth] Set OAUTH_ISSUER_URL to the externally reachable origin and restart.\n`
+  logger.warn(
+    "oauth",
+    `discovery requested via ${host}, but OAUTH_ISSUER_URL is ${env.OAUTH_ISSUER_URL} — ` +
+      "registration and token exchange will fail with nothing reaching this server"
   );
 }
 
@@ -76,6 +76,9 @@ oauthRoutes.get("/.well-known/*", (c) => {
 
 function oauthErrorResponse(c: Context, err: unknown) {
   if (err instanceof OAuthProtocolError) {
+    // WARN, not ERROR: an expected protocol rejection (bad redirect_uri, expired code, wrong
+    // PKCE verifier) is a client mistake or a probe, not a bug on our side.
+    logger.warn("oauth", `${err.oauthCode}: ${err.message}`);
     return c.json(
       { error: err.oauthCode, error_description: err.message },
       err.status as 400 | 401 | 403 | 404 | 409 | 410
@@ -87,6 +90,10 @@ function oauthErrorResponse(c: Context, err: unknown) {
 oauthRoutes.post("/oauth/register", zValidator("json", registerClientSchema), async (c) => {
   try {
     const result = await oauthService.registerClient(c.req.valid("json"));
+    logger.info("oauth", "client registered", {
+      clientId: result.client_id,
+      clientName: result.client_name,
+    });
     return c.json(result, 201);
   } catch (err) {
     return oauthErrorResponse(c, err);
@@ -132,6 +139,7 @@ oauthRoutes.post(
         c.get("userId"),
         decision
       );
+      logger.info("oauth", `authorization ${decision}`, { requestId, userId: c.get("userId") });
       return c.json(result);
     } catch (err) {
       return oauthErrorResponse(c, err);
@@ -156,6 +164,7 @@ oauthRoutes.post("/oauth/token", zValidator("form", tokenRequestSchema), async (
         clientId: input.client_id,
         redirectUri: input.redirect_uri,
       });
+      logger.info("oauth", "token issued", { grant: "authorization_code", clientId: input.client_id });
       return c.json(tokens);
     }
 
@@ -166,6 +175,7 @@ oauthRoutes.post("/oauth/token", zValidator("form", tokenRequestSchema), async (
       refreshToken: input.refresh_token,
       clientId: input.client_id,
     });
+    logger.info("oauth", "token issued", { grant: "refresh_token", clientId: input.client_id });
     return c.json(tokens);
   } catch (err) {
     return oauthErrorResponse(c, err);

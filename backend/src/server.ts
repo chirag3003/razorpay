@@ -17,11 +17,21 @@ import { oauthRoutes } from "./routes/oauth";
 import { mcpRoutes } from "./routes/mcp";
 import { razorpayWebhook } from "./webhooks/razorpay";
 import type { AppEnv } from "./types";
-import { logger } from "hono/logger";
+import { logger } from "./logger";
 
 const app = new Hono<AppEnv>();
 
-app.use(logger())
+// One line per request instead of hono/logger's two, with a timestamp (it has none) and the
+// caller when a route has set one — a domain-error status still routes through here since it's
+// set on the response object regardless of how the handler resolved it.
+app.use("*", async (c, next) => {
+  const startedAt = Date.now();
+  await next();
+  logger.info("http", `${c.res.status} ${c.req.method} ${c.req.path}`, {
+    ms: Date.now() - startedAt,
+    userId: c.get("userId"),
+  });
+});
 
 app.use(
   "*",
@@ -67,18 +77,19 @@ app.onError((err, c) => {
     );
   }
 
-  console.error(err);
+  logger.error("http", `unhandled ${c.req.method} ${c.req.path}`, err);
   return c.json({ error: "Internal server error", code: "INTERNAL_ERROR" }, 500);
 });
 
 if (env.RESERVE_PAY_SIM) {
-  console.log(
-    "\n  RESERVE PAY SIMULATOR IS ON — mandates and debits are fake, no money moves.\n" +
-      `  Approval lands ${env.RESERVE_PAY_SIM_APPROVAL_DELAY_MS}ms after setup. Controls: /api/reserve-pay/sim/*\n`
+  logger.info(
+    "boot",
+    `RESERVE PAY SIMULATOR ON — mandates and debits are fake, no money moves`,
+    { approvalDelayMs: env.RESERVE_PAY_SIM_APPROVAL_DELAY_MS, controls: "/api/reserve-pay/sim/*" }
   );
 }
 
-console.log(`backend listening on http://localhost:${env.PORT}`);
+logger.info("boot", `listening on http://localhost:${env.PORT}`);
 
 // Bun's server-config export — `bun src/server.ts` starts from this, no Bun.serve() call needed.
 export default {

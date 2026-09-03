@@ -1,4 +1,5 @@
 import { env } from "../../config/env";
+import { logger } from "../../logger";
 import {
   deliverySlotLabel,
   RESERVE_PAY_DEFAULT_EXPIRY_DAYS,
@@ -49,7 +50,7 @@ async function mandateView(userId: string) {
   try {
     return { mandate: await reservePayService.getMandate(userId, live.id), stale: false };
   } catch (err) {
-    console.error(`Reserve Pay sync failed for mandate ${live.id}; using local state:`, err);
+    logger.error("reserve-pay", "sync failed, using local state", err, { mandateId: live.id });
     return { mandate: reservePayService.presentMandate(live), stale: true };
   }
 }
@@ -65,7 +66,7 @@ async function remainingAfterCharge(userId: string): Promise<number> {
     if (!live) return 0;
     return toAgentMandate(reservePayService.presentMandate(live)).remaining;
   } catch (err) {
-    console.error(`Could not read remaining balance for user ${userId}:`, err);
+    logger.error("reserve-pay", "could not read remaining balance", err, { userId });
     return 0;
   }
 }
@@ -487,7 +488,7 @@ const placeOrder = defineTool({
       // The money moved and the order exists; only bookkeeping failed. An error here would tell
       // the customer their order failed when it didn't. A retry is safe — the cart is now empty,
       // so the fingerprint check rejects it rather than double-charging.
-      console.error(`Failed to mark cart mandate ${quote.id} consumed:`, err);
+      logger.error("checkout", "failed to mark cart mandate consumed", err, { quoteId: quote.id });
     }
 
     await auditService.log({

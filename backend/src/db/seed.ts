@@ -4,6 +4,7 @@
 import { db } from "./index";
 import { categories, products } from "./schema";
 import { slugify } from "../utils/slug";
+import { logger } from "../logger";
 
 const categoriesData = [
   {
@@ -164,7 +165,7 @@ async function seed() {
   for (const [categorySlug, items] of Object.entries(productsByCategory)) {
     const categoryId = categoryIdBySlug.get(categorySlug);
     if (!categoryId) {
-      console.warn(`Skipping products for unknown category slug: ${categorySlug}`);
+      logger.warn("seed", "skipping products for unknown category slug", { categorySlug });
       continue;
     }
 
@@ -197,14 +198,16 @@ async function seed() {
     productCount += rows.length;
   }
 
-  console.log(
-    `Seeded ${insertedCategories.length} categories and up to ${productCount} products (existing rows skipped on conflict).`
-  );
+  logger.info("seed", "done", {
+    categories: insertedCategories.length,
+    productsUpTo: productCount,
+    note: "existing rows skipped on conflict",
+  });
 }
 
 seed()
   .then(() => process.exit(0))
   .catch((err) => {
-    console.error("Seed failed:", err);
+    logger.error("seed", "failed", err);
     process.exit(1);
   });

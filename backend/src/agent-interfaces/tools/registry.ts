@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DomainError } from "../../errors";
+import { logger } from "../../logger";
 import { ToolFailure } from "./types";
 import type { ToolContext, ToolDefinition, ToolError, ToolResult } from "./types";
 import { catalogTools } from "./catalog";
@@ -125,9 +126,8 @@ function mapError(err: unknown): ToolError {
     }
   }
 
-  // Unmapped means a bug on our side, not a model error. Log it; the model gets a plain
-  // retryable failure rather than an internal message leaked into a chat.
-  console.error("Unhandled error in tool handler:", err);
+  // Unmapped means a bug on our side, not a model error. runTool logs the raw err with full
+  // tool/actor context; the model only ever sees the generic message below.
   return {
     code: "server",
     message: "Something went wrong on our side.",
@@ -135,22 +135,28 @@ function mapError(err: unknown): ToolError {
   };
 }
 
-/** The only entry point. Never throws — an LLM cannot catch an exception, so failures are data. */
-export async function runTool(
+/**
+ * `unhandled` never reaches a wire format — it exists only so runTool's log line can show the
+ * actual bug (via logger.error's stack-frame detail) rather than the generic message the model
+ * receives in `result`.
+ */
+async function execute(
   ctx: ToolContext,
   name: string,
-  rawInput: unknown = {}
-): Promise<ToolResult> {
+  rawInput: unknown
+): Promise<{ result: ToolResult; unhandled?: unknown }> {
   const tool = TOOLS[name];
 
   if (!tool) {
     return {
-      ok: false,
-      error: {
-        code: "not_found",
-        message: `No tool named "${name}".`,
-        retryable: false,
-        hint: `Available tools: ${Object.keys(TOOLS).join(", ")}`,
+      result: {
+        ok: false,
+        error: {
+          code: "not_found",
+          message: `No tool named "${name}".`,
+          retryable: false,
+          hint: `Available tools: ${Object.keys(TOOLS).join(", ")}`,
+        },
       },
     };
   }
@@ -162,20 +168,54 @@ export async function runTool(
       .join("; ");
 
     return {
-      ok: false,
-      error: {
-        code: "invalid_input",
-        message: `Invalid arguments for ${name}. ${issues}`,
-        retryable: true,
-        hint: "Fix the arguments and call the tool again.",
+      result: {
+        ok: false,
+        error: {
+          code: "invalid_input",
+          message: `Invalid arguments for ${name}. ${issues}`,
+          retryable: true,
+          hint: "Fix the arguments and call the tool again.",
+        },
       },
     };
   }
 
   try {
-    return { ok: true, data: await tool.handler(ctx, parsed.data) };
+    return { result: { ok: true, data: await tool.handler(ctx, parsed.data) } };
   } catch (err) {
-    if (err instanceof ToolFailure) return { ok: false, error: err.failure };
-    return { ok: false, error: mapError(err) };
+    if (err instanceof ToolFailure) return { result: { ok: false, error: err.failure } };
+
+    const mapped = mapError(err);
+    // A DomainError's message is already the real detail runTool will log (mapped.message).
+    // Only an unmapped bug needs the raw error surfaced instead, so its stack frame is locatable.
+    return { result: { ok: false, error: mapped }, unhandled: err instanceof DomainError ? undefined : err };
   }
+}
+
+/**
+ * The only entry point. Never throws — an LLM cannot catch an exception, so failures are data.
+ *
+ * Also the single chokepoint every AI-callable action passes through, from either surface (chat's
+ * agentLoop or MCP's buildMcpServer) — which is what makes one log line here cover both, rather
+ * than instrumenting the two callers separately.
+ */
+export async function runTool(
+  ctx: ToolContext,
+  name: string,
+  rawInput: unknown = {}
+): Promise<ToolResult> {
+  const startedAt = Date.now();
+  const { result, unhandled } = await execute(ctx, name, rawInput);
+  const fields = { actor: `${ctx.actor.type}:${ctx.actor.id.slice(0, 8)}`, ms: Date.now() - startedAt };
+
+  if (result.ok) {
+    logger.info("tool", name, { ...fields, result: "ok" });
+  } else {
+    // Every failure logs at ERROR, expected domain errors included — "which errors are
+    // occurring" is the whole point. `unhandled` swaps in the raw error so a genuine bug's stack
+    // frame is locatable; a mapped DomainError's own message is already the real detail.
+    logger.error("tool", `${name}  code=${result.error.code}`, unhandled ?? result.error.message, fields);
+  }
+
+  return result;
 }

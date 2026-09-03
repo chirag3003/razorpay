@@ -4,6 +4,7 @@ import { zValidator } from "@hono/zod-validator";
 import { chatRequestSchema } from "../schemas/chat.schema";
 import * as chatService from "../services/chatService";
 import { DomainError } from "../errors";
+import { logger } from "../logger";
 import { requireAuth } from "../middleware/auth";
 import { CHAT_PROTOCOL_VERSION } from "../chat/protocol";
 import type { ServerEvent } from "../chat/protocol";
@@ -67,7 +68,7 @@ chatRoutes.post("/", zValidator("json", chatRequestSchema), async (c) => {
 
       // Headers are already sent, so an exception cannot become a 4xx/5xx. As an error frame the
       // stream stays well-formed and the panel renders a retryable failure instead of hanging.
-      console.error("Chat turn failed:", err);
+      logger.error("chat", "turn failed", err);
       await send({
         type: "error",
         code: "server",

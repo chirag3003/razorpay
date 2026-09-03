@@ -2,6 +2,7 @@ import type { ChatMessages, ChatStreamChunk, ChatFunctionTool } from "@openroute
 import { openrouter, modelChain } from "../clients/openrouter";
 import { runTool } from "../agent-interfaces/tools/registry";
 import type { ToolContext, ToolResult } from "../agent-interfaces/tools/types";
+import { logger } from "../logger";
 
 /**
  * The model/tool loop, no framework. Owns three things: talking to OpenRouter, reassembling a
@@ -45,7 +46,7 @@ async function* streamOnce(
   messages: ChatMessages[],
   tools: ChatFunctionTool[],
   signal: AbortSignal | undefined
-): AsyncGenerator<LoopEvent, { text: string; toolCalls: PendingToolCall[] }> {
+): AsyncGenerator<LoopEvent, { text: string; toolCalls: PendingToolCall[]; model: string | null }> {
   const response = await openrouter.chat.send(
     {
       chatRequest: {
@@ -71,6 +72,7 @@ async function* streamOnce(
 
   let text = "";
   let textOpen = false;
+  let model: string | null = null;
   const byIndex = new Map<number, PendingToolCall>();
 
   for await (const chunk of response) {
@@ -79,6 +81,10 @@ async function* streamOnce(
     if (chunk.error) {
       throw new Error(`OpenRouter error ${chunk.error.code}: ${chunk.error.message}`);
     }
+
+    // The model that actually answered, not just modelChain[0] — this is what makes a silent
+    // server-side fallover to the secondary model visible instead of assumed.
+    if (chunk.model) model = chunk.model;
 
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) continue;
@@ -110,6 +116,7 @@ async function* streamOnce(
       .sort(([a], [b]) => a - b)
       .map(([, call]) => call)
       .filter((call) => call.name !== ""),
+    model,
   };
 }
 
@@ -130,7 +137,7 @@ export async function* runAgentTurn(input: {
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const stream = streamOnce(messages, input.tools, input.signal);
 
-      let result: { text: string; toolCalls: PendingToolCall[] };
+      let result: { text: string; toolCalls: PendingToolCall[]; model: string | null };
       while (true) {
         const next = await stream.next();
         if (next.done) {
@@ -141,6 +148,14 @@ export async function* runAgentTurn(input: {
       }
 
       if (input.signal?.aborted) return;
+
+      logger.info("llm", `round ${round + 1}`, {
+        model: result.model ?? modelChain[0],
+        // A model in modelChain[0]'s place but not equal to it means OpenRouter's server-side
+        // failover fired — the one thing a per-round log line needs to make visible.
+        fallback: result.model !== null && result.model !== modelChain[0] ? true : undefined,
+        toolCalls: result.toolCalls.length,
+      });
 
       const assistant: ChatMessages = {
         role: "assistant",
@@ -198,6 +213,7 @@ export async function* runAgentTurn(input: {
     }
 
     // Fell out of the round cap with the model still asking for tools.
+    logger.warn("llm", `round cap hit (${MAX_ROUNDS}) with the model still calling tools`);
     yield {
       type: "failed",
       message: "The assistant got stuck working on that. Try rephrasing?",
@@ -205,7 +221,7 @@ export async function* runAgentTurn(input: {
     };
   } catch (err) {
     if (input.signal?.aborted) return;
-    console.error("Agent loop failed:", err);
+    logger.error("llm", "agent loop failed", err);
     yield {
       type: "failed",
       message: "The assistant hit a problem. Try again?",

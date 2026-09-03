@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { simPayments, simTokens } from "../db/schema";
 import { env } from "../config/env";
+import { logger } from "../logger";
 import type { RazorpayTokenResponse } from "./paymentService";
 
 // Demo stand-in for Razorpay's Reserve Pay endpoints, used only when RESERVE_PAY_SIM is on.
@@ -89,9 +90,9 @@ async function sendWebhook(event: string, payload: Record<string, unknown>) {
       headers: { "Content-Type": "application/json", "x-razorpay-signature": signature },
       body,
     });
-    if (!res.ok) console.error(`[sim] webhook ${event} rejected: ${res.status}`);
+    if (!res.ok) logger.error("sim", `webhook ${event} rejected`, undefined, { status: res.status });
   } catch (err) {
-    console.error(`[sim] webhook ${event} failed to send:`, err);
+    logger.error("sim", `webhook ${event} failed to send`, err);
   }
 }
 

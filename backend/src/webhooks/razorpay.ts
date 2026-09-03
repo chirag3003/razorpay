@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import * as orderService from "../services/orderService";
 import * as paymentService from "../services/paymentService";
 import * as reservePayService from "../services/reservePayService";
+import { logger } from "../logger";
 
 export const razorpayWebhook = new Hono();
 
@@ -120,12 +121,15 @@ razorpayWebhook.post("/", async (c) => {
   const signature = c.req.header("x-razorpay-signature") ?? "";
 
   if (!paymentService.verifyWebhookSignature(rawBody, signature)) {
+    logger.warn("webhook", "signature verification failed");
     return c.json({ error: "Invalid webhook signature" }, 400);
   }
 
   const body = JSON.parse(rawBody) as WebhookBody;
   const payment = body.payload?.payment?.entity;
   const token = body.payload?.token?.entity;
+
+  logger.info("webhook", body.event);
 
   // Razorpay retries any non-2xx, so an unhandled throw becomes an infinite redelivery loop. Log
   // and acknowledge: syncMandate reconciles anything missed the next time the mandate is read.
@@ -156,7 +160,7 @@ razorpayWebhook.post("/", async (c) => {
         break;
     }
   } catch (err) {
-    console.error(`Razorpay webhook handler failed for event ${body.event}:`, err);
+    logger.error("webhook", "handler failed", err, { event: body.event });
   }
 
   return c.json({ received: true });

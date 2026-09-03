@@ -22,6 +22,13 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
                        Zero dependencies on anything else in the tree.
   /errors             Typed domain error hierarchy (DomainError base + specific subclasses).
                        Zero dependencies on anything else in the tree.
+  logger.ts           The only logging module — one line per event (HTTP request, tool call,
+                       LLM round, everything else), gated by DEBUG_LOGS (default on; WARN/ERROR
+                       always print). Zero dependencies beyond /config, so it is import-safe from
+                       anywhere, same leaf-module status as /schemas and /errors above. Every
+                       AI-callable action logs from exactly one place — runTool in
+                       /agent-interfaces/tools/registry.ts — which is what makes chat and MCP
+                       show up identically without instrumenting either caller separately.
   /clients            External SDK instances (razorpay.ts, anthropic.ts), created once
   /config             Parses + validates process.env via /schemas/env.schema.ts at boot —
                        fail fast on bad config, don't let a missing key surface mid-request

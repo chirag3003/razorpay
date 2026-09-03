@@ -10,6 +10,7 @@ import type { AuthInfo, McpRequestContext } from "@modelcontextprotocol/server";
 import { verifyAgentToken } from "../services/userService";
 import { buildMcpServer } from "../agent-interfaces/mcp";
 import { env } from "../config/env";
+import { logger } from "../logger";
 
 // The MCP endpoint. Auth is the agent JWT minted by routes/oauth.ts's authorization-code
 // exchange. On failure requireBearerAuth returns the 401 + WWW-Authenticate challenge, which is
@@ -29,7 +30,10 @@ const bearerGate = requireBearerAuth({
       let userId: string;
       try {
         userId = await verifyAgentToken(token);
-      } catch {
+      } catch (err) {
+        // The client only ever sees the generic 401 + WWW-Authenticate challenge below — this
+        // is the one place the real reason (expired, malformed, wrong secret) is visible at all.
+        logger.warn("mcp", "bearer token rejected", { reason: (err as Error)?.message });
         throw new OAuthError(OAuthErrorCode.InvalidToken, "Invalid or expired agent token");
       }
 

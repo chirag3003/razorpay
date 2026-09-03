@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { logger } from "../logger";
 import { and, desc, eq, gt, gte, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { reservePayDebits, reservePayMandates, users } from "../db/schema";
@@ -716,7 +717,7 @@ export async function revokeMandate(
       );
     } catch (err) {
       cancellationError = paymentService.describeGatewayError(err);
-      console.error(`Reserve Pay token cancellation failed for mandate ${mandateId}:`, err);
+      logger.error("reserve-pay", "token cancellation failed", err, { mandateId });
     }
   }
 

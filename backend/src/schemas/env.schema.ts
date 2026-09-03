@@ -16,6 +16,14 @@ export const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true" || v === "1"),
 
+  // Gates src/logger.ts's INFO lines (every HTTP request, tool call and LLM round). WARN/ERROR
+  // always print regardless — a quiet run should still say when something broke. Defaults on:
+  // this backend is otherwise hard to follow from the console.
+  DEBUG_LOGS: z
+    .string()
+    .default("true")
+    .transform((v) => v === "true" || v === "1"),
+
   // Serves the Reserve Pay rail from a local simulator instead of Razorpay — the S2S payment API
   // is not provisioned on the account, so no mandate can otherwise be authorised. Config rejects
   // this against a live key. z.coerce.boolean() is wrong here: it reads "false" as true.

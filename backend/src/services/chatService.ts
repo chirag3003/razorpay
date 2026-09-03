@@ -1,4 +1,5 @@
 import { and, asc, eq } from "drizzle-orm";
+import { logger } from "../logger";
 import type { ChatMessages } from "@openrouter/sdk/models";
 import { db } from "../db";
 import { chatMessages, conversations } from "../db/schema";
@@ -249,7 +250,7 @@ export async function* runChatTurn(input: {
     try {
       await persistTurn(conversation.id, rows, null);
     } catch (err) {
-      console.error(`Failed to persist chat turn for conversation ${conversation.id}:`, err);
+      logger.error("chat", "failed to persist turn", err, { conversationId: conversation.id });
     }
 
     yield { type: "message_end", messageId };
@@ -379,7 +380,7 @@ export async function* runChatTurn(input: {
   } catch (err) {
     // The customer has their answer and any order placed is real. Losing the transcript is a
     // bookkeeping failure, not a failed turn.
-    console.error(`Failed to persist chat turn for conversation ${conversation.id}:`, err);
+    logger.error("chat", "failed to persist turn", err, { conversationId: conversation.id });
   }
 
   yield { type: "message_end", messageId };
