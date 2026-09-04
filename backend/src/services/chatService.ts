@@ -1,4 +1,4 @@
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq } from "drizzle-orm";
 import { logger } from "../logger";
 import type { ChatMessages } from "@openrouter/sdk/models";
 import { db } from "../db";
@@ -96,16 +96,63 @@ export async function resolveConversation(
   return resolveConversation(userId, conversationId);
 }
 
+/**
+ * Where a replayable window may begin.
+ *
+ * Cutting purely by row count breaks the transcript: each tool round writes an `assistant` row
+ * carrying `tool_calls` plus one `tool` row per result, and a `tool` message whose matching
+ * `assistant` was cut is rejected with a 400 by every OpenAI-compatible endpoint. That failure is
+ * NOT transient — history only grows, so once a conversation crosses the boundary unluckily,
+ * every subsequent turn in it fails identically ("The assistant hit a problem. Try again?").
+ *
+ * A `user` row, or an `assistant` row that called no tools, is always a safe first message.
+ */
+function isSafeHistoryStart(message: ChatMessages): boolean {
+  if (message.role === "user") return true;
+  if (message.role !== "assistant") return false;
+
+  // The OpenRouter SDK's shape is camelCase `toolCalls`; `tool_calls` is checked too because
+  // these rows are raw JSONB replayed verbatim, so a row written by another producer (or an
+  // older build) could carry the wire spelling instead.
+  const raw = message as { toolCalls?: unknown; tool_calls?: unknown };
+  const toolCalls = raw.toolCalls ?? raw.tool_calls;
+  return !Array.isArray(toolCalls) || toolCalls.length === 0;
+}
+
 async function loadHistory(conversationId: string): Promise<ChatMessages[]> {
+  // Newest-first with a LIMIT, then reversed — the whole transcript was previously read on every
+  // turn, each row holding a full OpenRouter message with tool results as JSONB, just to keep the
+  // last MAX_HISTORY_MESSAGES. Cost grew with conversation length, unboundedly.
+  //
+  // Over-fetch, because the window has to be trimmed forward to a turn boundary below and the
+  // trimming only ever discards rows.
   const rows = await db
     .select()
     .from(chatMessages)
     .where(eq(chatMessages.conversationId, conversationId))
-    .orderBy(asc(chatMessages.createdAt));
+    .orderBy(desc(chatMessages.createdAt))
+    .limit(MAX_HISTORY_MESSAGES * 2);
 
   // Raw OpenRouter messages, replayed verbatim — reconstructing them from rendered widgets is
   // lossy and is how a chat agent starts contradicting itself.
-  return rows.slice(-MAX_HISTORY_MESSAGES).map((row) => row.content as unknown as ChatMessages);
+  const messages = rows
+    .reverse()
+    .slice(-MAX_HISTORY_MESSAGES)
+    .map((row) => row.content as unknown as ChatMessages);
+
+  // Walk forward to the first row that can legally start a request.
+  const start = messages.findIndex(isSafeHistoryStart);
+  if (start === -1) {
+    // The whole window is one long tool round with no safe entry point. Sending none of it is
+    // correct: the turn loses context but succeeds, where sending a fragment is a guaranteed 400.
+    logger.warn("chat", "no safe history boundary in window — dropping history for this turn", {
+      conversationId,
+      windowSize: messages.length,
+    });
+    return [];
+  }
+
+  return messages.slice(start);
 }
 
 /** The rendered transcript, for a `{kind:"resume"}` turn. */

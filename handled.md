@@ -116,6 +116,17 @@ trace.
 
 ## 5. Agent and LLM layer
 
+**Chat history is truncated on a turn boundary, never mid-round.** `loadHistory` reads the last
+`MAX_HISTORY_MESSAGES` rows with an `ORDER BY created_at DESC LIMIT` (over-fetching, since
+trimming only discards), then walks forward to the first row that can legally begin a request — a
+`user` row, or an `assistant` row that called no tools. Cutting purely by row count could land
+between an `assistant` row carrying `toolCalls` and its `tool` result rows, and a `tool` message
+whose matching `assistant` is missing is rejected with a 400 by every OpenAI-compatible endpoint.
+That failure was **not transient**: history only grows, so a conversation that crossed the
+boundary unluckily failed identically on every subsequent turn. If no safe boundary exists in the
+whole window, history is dropped for that turn and a WARN is logged — the turn loses context but
+succeeds, where sending a fragment is a guaranteed 400.
+
 **`runTool` never throws** (`agent-interfaces/tools/registry.ts:202`). A model cannot catch an
 exception, so every failure becomes data: `{ok: false, error}`.
 
