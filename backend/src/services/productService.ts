@@ -62,16 +62,21 @@ export async function listProducts(filters: ProductQuery) {
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
+  // Every sort ends with products.id. Without a tiebreaker, rows with equal keys come back in
+  // planner order, which is not stable across pages — so paginated results could repeat or skip
+  // products entirely. That is the backend half of web/issues.md's pagination bug.
   const orderBy =
     filters.sort === "price-asc"
-      ? [asc(products.price)]
+      ? [asc(products.price), asc(products.id)]
       : filters.sort === "price-desc"
-        ? [desc(products.price)]
+        ? [desc(products.price), asc(products.id)]
         : filters.sort === "rating"
-          ? [desc(products.rating)]
+          ? [desc(products.rating), asc(products.id)]
           : filters.sort === "newest"
-            ? [sql`CASE WHEN ${products.tags} @> ARRAY['new']::text[] THEN 0 ELSE 1 END`]
-            : [desc(products.ratingCount)];
+            ? // Actually by age now. This used to order by whether the product carried the `new`
+              // *tag*, because products had no created_at column.
+              [desc(products.createdAt), asc(products.id)]
+            : [desc(products.ratingCount), asc(products.id)];
 
   const baseQuery = db
     .select(productWithCategory)

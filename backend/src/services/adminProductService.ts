@@ -85,7 +85,7 @@ export async function list(query: AdminProductQuery) {
         ? [asc(products.price)]
         : query.sort === "price-desc"
           ? [desc(products.price)]
-          : [desc(products.archivedAt), desc(products.slug)]; // "newest" — no created_at column
+          : [desc(products.createdAt), asc(products.id)]; // "newest"
 
   const [items, countRows] = await Promise.all([
     db
