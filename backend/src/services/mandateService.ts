@@ -179,9 +179,14 @@ export async function markStatus(
   status: "superseded" | "expired" | "consumed",
   orderId?: string
 ) {
+  // orderId is included ONLY when provided. `orderId: orderId ?? null` would null any existing
+  // one on every call that omits it — and that column is what makes place_order idempotent, so
+  // clearing it turns a safe retry into a second charge. Not reachable today (every call that
+  // omits it targets an `open` quote, which has none) but it is a loaded footgun on the one
+  // column that prevents double-charging.
   await db
     .update(cartMandates)
-    .set({ status, orderId: orderId ?? null, updatedAt: new Date() })
+    .set({ status, ...(orderId !== undefined ? { orderId } : {}), updatedAt: new Date() })
     .where(eq(cartMandates.id, quoteId));
 }
 
