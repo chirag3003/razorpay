@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { carts, orderItems, orders, products, type CheckoutSnapshot } from "../db/schema";
 import { ConflictError, EmptyCartError, NotFoundError } from "../errors";
@@ -10,6 +10,7 @@ import * as paymentService from "./paymentService";
 import * as reservePayService from "./reservePayService";
 import type { InitiateCheckoutInput } from "../schemas/checkout.schema";
 import { pgErrorCode, PG_UNIQUE_VIOLATION } from "../utils/db-error";
+import { MAX_ORDER_PAGE_SIZE } from "../constants";
 
 function generateOrderNumber() {
   const timestamp = Date.now().toString(36).toUpperCase();
@@ -310,14 +311,19 @@ export async function cancelPendingCheckout(razorpayOrderId: string) {
   });
 }
 
-// Exported so adminOrderService returns the same order+items+product shape without duplicating
-// the join.
-export async function getOrderWithItems(orderId: string) {
-  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
-  if (!order) throw new NotFoundError("Order");
+type OrderRow = typeof orders.$inferSelect;
 
-  const items = await db
+/**
+ * Attaches items to a page of already-selected order rows in ONE query, rather than one query per
+ * order. Exported so adminOrderService hydrates the same way instead of looping getOrderWithItems
+ * — which re-selected the order it had just been handed, on top of its items.
+ */
+export async function attachItems<T extends OrderRow>(orderRows: T[]) {
+  if (orderRows.length === 0) return [];
+
+  const rows = await db
     .select({
+      orderId: orderItems.orderId,
       productId: orderItems.productId,
       qty: orderItems.qty,
       priceAtPurchase: orderItems.priceAtPurchase,
@@ -325,23 +331,81 @@ export async function getOrderWithItems(orderId: string) {
     })
     .from(orderItems)
     .innerJoin(products, eq(orderItems.productId, products.id))
-    .where(eq(orderItems.orderId, orderId));
+    .where(
+      inArray(
+        orderItems.orderId,
+        orderRows.map((order) => order.id)
+      )
+    );
 
-  return { ...order, items };
+  const byOrder = new Map<string, Omit<(typeof rows)[number], "orderId">[]>();
+  for (const { orderId, ...item } of rows) {
+    const bucket = byOrder.get(orderId);
+    if (bucket) bucket.push(item);
+    else byOrder.set(orderId, [item]);
+  }
+
+  return orderRows.map((order) => ({ ...order, items: byOrder.get(order.id) ?? [] }));
 }
 
-export async function listOrders(userId: string) {
+// Exported so adminOrderService returns the same order+items+product shape without duplicating
+// the join. Single-order path; use attachItems for a page.
+export async function getOrderWithItems(orderId: string) {
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order) throw new NotFoundError("Order");
+
+  const [hydrated] = await attachItems([order]);
+  if (!hydrated) throw new NotFoundError("Order");
+  return hydrated;
+}
+
+/**
+ * A page of the customer's orders, newest first, with items — two queries total.
+ *
+ * It was previously 1 + 2N: the order rows, then every one mapped through getOrderWithItems,
+ * which re-selected the order plus its items. Twenty orders was 41 round trips over an unindexed
+ * user_id, with no limit or offset anywhere.
+ */
+export async function listOrders(
+  userId: string,
+  options: { limit?: number; offset?: number } = {}
+) {
   const rows = await db
-    .select()
+    .select({ order: orders, totalCount: sql<number>`count(*) over()::int` })
     .from(orders)
     .where(eq(orders.userId, userId))
-    .orderBy(desc(orders.placedAt));
+    // asc(id) so equal placedAt values cannot make a page repeat or skip an order.
+    .orderBy(desc(orders.placedAt), desc(orders.id))
+    .limit(options.limit ?? MAX_ORDER_PAGE_SIZE)
+    .offset(options.offset ?? 0);
 
-  return Promise.all(rows.map((row) => getOrderWithItems(row.id)));
+  return {
+    items: await attachItems(rows.map((row) => row.order)),
+    total: rows[0]?.totalCount ?? 0,
+  };
 }
 
 export async function getOrderById(userId: string, orderId: string) {
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
   if (!order || order.userId !== userId) throw new NotFoundError("Order");
   return getOrderWithItems(orderId);
+}
+
+/**
+ * Resolve a customer-facing order number ("FC-…") within one user's own orders. Here rather than
+ * in the tool that wanted it: /agent-interfaces never touches the database (Service Layer Rule),
+ * and orders.ts was reaching for `db` directly to do this.
+ *
+ * Scoped to the caller in the query itself, so an order number belonging to someone else is
+ * indistinguishable from one that does not exist — the same anti-probing shape getOrderById uses.
+ */
+export async function getOrderByNumber(userId: string, orderNumber: string) {
+  const [order] = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.orderNumber, orderNumber), eq(orders.userId, userId)))
+    .limit(1);
+
+  if (!order) throw new NotFoundError("Order");
+  return getOrderWithItems(order.id);
 }

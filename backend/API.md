@@ -485,7 +485,10 @@ just call `/checkout/initiate` again — it creates a fresh Razorpay order from 
 ### 6.9 Orders
 Both require auth and are scoped to the caller.
 
-- `GET /api/orders` → `200 { "orders": Order[] }`, newest first.
+- `GET /api/orders` → `200 { "orders": Order[], "total": number }`, newest first.
+  Optional `?limit=` (1–100, default 100) and `?offset=` (default 0) paginate; `total` is the
+  unpaginated count, so a client can page without a second call. Sending neither returns the
+  first 100, which is what the storefront does today.
 - `GET /api/orders/:id` → `200 { "order": Order }`. `404` if it doesn't exist **or** belongs to
   someone else (same non-distinguishing behavior as addresses).
 

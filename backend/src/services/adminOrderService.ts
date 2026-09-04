@@ -17,6 +17,7 @@ const buyerSelect = {
 type Buyer = { id: string; name: string; email: string; phone: string };
 
 // The storefront's order+items+product shape plus the buyer — admins are not scoped to a user.
+// Single-order path only; listOrders hydrates a whole page in one query via attachItems.
 async function withDetail(orderId: string, buyer: Buyer) {
   const detail = await orderService.getOrderWithItems(orderId);
   return { ...detail, buyer };
@@ -31,35 +32,38 @@ export async function listOrders(query: AdminOrderQuery) {
   if (query.q) conditions.push(ilike(orders.orderNumber, `%${query.q}%`));
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
+  // asc(id) tiebreaker on every branch, so a page cannot repeat or skip an order.
   const orderBy =
     query.sort === "oldest"
-      ? [asc(orders.placedAt)]
+      ? [asc(orders.placedAt), asc(orders.id)]
       : query.sort === "total-desc"
-        ? [desc(orders.total)]
+        ? [desc(orders.total), asc(orders.id)]
         : query.sort === "total-asc"
-          ? [asc(orders.total)]
-          : [desc(orders.placedAt)];
+          ? [asc(orders.total), asc(orders.id)]
+          : [desc(orders.placedAt), asc(orders.id)];
 
-  const [rows, countRows] = await Promise.all([
-    db
-      .select({ id: orders.id, buyer: buyerSelect })
-      .from(orders)
-      .innerJoin(users, eq(orders.userId, users.id))
-      .where(whereClause)
-      .orderBy(...orderBy)
-      .limit(query.pageSize)
-      .offset((query.page - 1) * query.pageSize),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(orders)
-      .where(whereClause),
-  ]);
+  // Three queries for a whole page: the orders, their items, and the count folded into the
+  // first. It was previously 1 + 2N — with pageSize capped at 100, an admin page could be 200
+  // round trips, and adminDashboardService.summary inherited that for its recent-orders panel.
+  const rows = await db
+    .select({
+      order: orders,
+      buyer: buyerSelect,
+      totalCount: sql<number>`count(*) over()::int`,
+    })
+    .from(orders)
+    .innerJoin(users, eq(orders.userId, users.id))
+    .where(whereClause)
+    .orderBy(...orderBy)
+    .limit(query.pageSize)
+    .offset((query.page - 1) * query.pageSize);
 
-  const items = await Promise.all(rows.map((r) => withDetail(r.id, r.buyer)));
+  const hydrated = await orderService.attachItems(rows.map((row) => row.order));
+  const buyerByOrderId = new Map(rows.map((row) => [row.order.id, row.buyer]));
 
   return {
-    items,
-    total: countRows[0]?.count ?? 0,
+    items: hydrated.map((order) => ({ ...order, buyer: buyerByOrderId.get(order.id)! })),
+    total: rows[0]?.totalCount ?? 0,
     page: query.page,
     pageSize: query.pageSize,
   };

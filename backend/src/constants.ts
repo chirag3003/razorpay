@@ -82,6 +82,11 @@ export const MAX_CART_ITEM_QTY = 20;
 // any real usage — this is an abuse bound, not a product limit.
 export const MAX_CONVERSATIONS_PER_USER = 200;
 
+// Default and ceiling for one page of a customer's own order history. listOrders previously had
+// no limit at all; the storefront reads the whole list in one call, so this is set high enough
+// not to truncate any realistic history while still bounding the query.
+export const MAX_ORDER_PAGE_SIZE = 100;
+
 // The signed order quote from prepare_order. Short-lived: it freezes a price, and the longer it
 // lives the more likely the cart behind it has moved.
 export const CART_MANDATE_TTL_MINUTES = 15;
