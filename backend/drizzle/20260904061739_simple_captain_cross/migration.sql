@@ -18,7 +18,8 @@ CREATE INDEX "reserve_pay_debits_mandate_idx" ON "reserve_pay_debits" ("mandate_
 -- GIN that tags would otherwise support. Every search was a sequential scan, on the hottest path
 -- both the chat agent and MCP callers take.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;--> statement-breakpoint
--- Serves ILIKE '%term%' on name, and buys typo tolerance as a side effect.
+-- Serves ILIKE '%term%' on name. Makes the existing match fast; does NOT make it fuzzy — that
+-- would need the similarity operator and a threshold, which is a recall decision, not an index.
 CREATE INDEX IF NOT EXISTS "products_name_trgm_idx" ON "products" USING gin ("name" gin_trgm_ops);--> statement-breakpoint
 -- Serves the rewritten tag clause, `tags && ARRAY[...]`.
 CREATE INDEX IF NOT EXISTS "products_tags_gin_idx" ON "products" USING gin ("tags");
