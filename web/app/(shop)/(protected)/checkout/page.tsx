@@ -22,7 +22,7 @@ import { CartSummary } from "@/components/cart/cart-summary";
 import { CartLineItem } from "@/components/cart/cart-line-item";
 import { EmptyState } from "@/components/common/empty-state";
 import { useCartSummary, useCartStore } from "@/store/cart-store";
-import { useAuthStore } from "@/store/auth-store";
+import { useAuthStore, handleAuthApiError } from "@/store/auth-store";
 import { getAddresses, createAddress } from "@/lib/api/addresses";
 import { initiateCheckout, verifyCheckout } from "@/lib/api/checkout";
 import { loadRazorpayCheckout } from "@/lib/razorpay";
@@ -54,7 +54,10 @@ export default function CheckoutPage() {
           fetched.find((a) => a.isDefault)?.id ?? fetched[0]?.id ?? ""
         );
       })
-      .catch(() => toast.error("Couldn't load your addresses"))
+      .catch((err) => {
+        if (handleAuthApiError(err)) return;
+        toast.error("Couldn't load your addresses");
+      })
       .finally(() => setAddressesLoading(false));
   }, [token]);
 
@@ -88,7 +91,8 @@ export default function CheckoutPage() {
       setSelectedAddressId(address.id);
       setAddressDialogOpen(false);
       toast.success("Address saved");
-    } catch {
+    } catch (err) {
+      if (handleAuthApiError(err)) return;
       toast.error("Couldn't save address");
     }
   }
@@ -137,10 +141,11 @@ export default function CheckoutPage() {
         },
       }).open();
     } catch (err) {
+      setPlacingOrder(false);
+      if (handleAuthApiError(err)) return;
       toast.error(
         err instanceof ApiError ? err.message : "Couldn't start checkout"
       );
-      setPlacingOrder(false);
     }
   }
 

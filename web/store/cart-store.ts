@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import * as cartApi from "@/lib/api/cart";
-import { useAuthStore } from "@/store/auth-store";
+import { useAuthStore, handleAuthApiError } from "@/store/auth-store";
 import type { Cart } from "@/lib/types";
 
 type CartState = {
@@ -31,7 +31,9 @@ export const useCartStore = create<CartState>()((set) => ({
     try {
       const cart = await cartApi.fetchCart(token);
       set({ cart, status: "ready" });
-    } catch {
+    } catch (err) {
+      // A 401 ends the session outright; anything else stays retryable.
+      if (handleAuthApiError(err)) return;
       set({ status: "error" });
     }
   },

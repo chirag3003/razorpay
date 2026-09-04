@@ -35,7 +35,7 @@ import {
 } from "@/lib/api/addresses";
 import { updateProfile } from "@/lib/api/auth";
 import { getOrders } from "@/lib/api/orders";
-import { useAuthStore } from "@/store/auth-store";
+import { useAuthStore, handleAuthApiError } from "@/store/auth-store";
 import { ApiError, ApiValidationError } from "@/lib/api/client";
 import { profileSchema, type ProfileFormValues } from "@/lib/validation";
 import type { AddressFormValues } from "@/lib/validation";
@@ -55,7 +55,8 @@ export default function AccountPage() {
 
   useEffect(() => {
     if (!token) return;
-    getAddresses(token).then(setAddresses).catch(() => {
+    getAddresses(token).then(setAddresses).catch((err) => {
+      if (handleAuthApiError(err)) return;
       toast.error("Couldn't load your addresses");
     });
     getOrders(token)
@@ -79,6 +80,7 @@ export default function AccountPage() {
       setUser(updated);
       toast.success("Profile updated");
     } catch (err) {
+      if (handleAuthApiError(err)) return;
       if (err instanceof ApiValidationError) {
         for (const fieldError of err.fieldErrors) {
           form.setError(fieldError.path as keyof ProfileFormValues, {
@@ -124,7 +126,8 @@ export default function AccountPage() {
         toast.success("Address added");
       }
       setDialogOpen(false);
-    } catch {
+    } catch (err) {
+      if (handleAuthApiError(err)) return;
       toast.error("Couldn't save address");
     }
   }
@@ -135,7 +138,8 @@ export default function AccountPage() {
       await deleteAddress(token, id);
       setAddresses((prev) => prev.filter((a) => a.id !== id));
       toast.success("Address removed");
-    } catch {
+    } catch (err) {
+      if (handleAuthApiError(err)) return;
       toast.error("Couldn't remove address");
     }
   }
