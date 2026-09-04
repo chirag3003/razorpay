@@ -13,7 +13,7 @@ import { getDeliveryFee, MAX_CART_ITEM_QTY } from "../constants";
 // here takes a cart_id, never client- or agent-submitted contents. One active cart per user;
 // getOrCreateActiveCartId is the only place that assumption lives.
 
-export async function getOrCreateActiveCartId(userId: string) {
+export async function getOrCreateActiveCartId(userId: string): Promise<string> {
   const [existing] = await db
     .select({ id: carts.id })
     .from(carts)
@@ -22,9 +22,28 @@ export async function getOrCreateActiveCartId(userId: string) {
 
   if (existing) return existing.id;
 
-  const [created] = await db.insert(carts).values({ userId }).returning({ id: carts.id });
-  if (!created) throw new Error("Failed to create cart");
-  return created.id;
+  // Insert-after-check, so two concurrent callers both reach here and carts.user_id is unique.
+  // onConflictDoNothing makes the loser return no row instead of throwing a raw unique violation
+  // that nothing catches — same shape chatService.resolveConversation uses. This is the hottest
+  // path in the backend and is newly reachable from parallel MCP tool calls, which have no
+  // client-side serialisation.
+  const [created] = await db
+    .insert(carts)
+    .values({ userId })
+    .onConflictDoNothing()
+    .returning({ id: carts.id });
+
+  if (created) return created.id;
+
+  // Lost the race; re-read the winner's row.
+  const [winner] = await db
+    .select({ id: carts.id })
+    .from(carts)
+    .where(eq(carts.userId, userId))
+    .limit(1);
+
+  if (!winner) throw new Error("Failed to create cart");
+  return winner.id;
 }
 
 async function assertItemBelongsToCart(cartId: string, itemId: string) {
