@@ -231,6 +231,21 @@ Failures are shaped so a caller learns nothing from them.
   mismatch and a content flash.
 - **Admin failures funnel through one handler** (`store/admin-auth-store.ts`), where a 401 tears
   the session down and anything else is left retryable with the token kept.
+- **Shopper failures funnel the same way.** `handleAuthApiError` (`store/auth-store.ts`) is the
+  shopper-side twin: a 401 anywhere — the 7-day JWT lapsing mid-session — ends the session once,
+  raises a transient `sessionExpired` flag, and `AuthHydrator` turns that into a redirect to
+  `/login?next=<path>`. Everything else returns false and stays retryable.
+- **A post-capture failure is never reported as a failed payment.**
+  `app/(shop)/(protected)/checkout/page.tsx` — if `/checkout/verify` throws after Razorpay has
+  captured, the money is already gone and the `payment.captured` webhook creates the order
+  regardless. The page shows a "confirming your payment" state and polls `GET /api/orders` for an
+  order matching the Razorpay order id, then routes to the success page; after ~30s it falls back
+  to "your payment went through, we'll email you" with a link to `/orders`. Only
+  `PAYMENT_VERIFICATION_FAILED` — a genuinely bad signature — keeps the plain error path.
+- **Cart writes survive out-of-order responses.** `store/cart-store.ts` stamps every mutation with
+  a monotonic sequence number and applies a response only while it is still the newest, so five
+  fast taps on `+` settle on the value that was issued last, not the one that responded last. A
+  failed write resyncs from the server rather than reverting to a stale snapshot.
 
 ## 9. Configuration and the simulator
 
