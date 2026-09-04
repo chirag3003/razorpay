@@ -15,6 +15,7 @@ import { categories, products } from "../db/schema";
 import { NotFoundError } from "../errors";
 import { buildProductSearchCondition } from "./productSearch";
 import type { ProductQuery } from "../schemas/product-query.schema";
+import { splitPagedRows } from "../utils/paginate";
 
 // Returned shape mirrors the frontend's Product type (categorySlug, not a raw categoryId FK).
 const productWithCategory = {
@@ -78,28 +79,22 @@ export async function listProducts(filters: ProductQuery) {
               [desc(products.createdAt), asc(products.id)]
             : [desc(products.ratingCount), asc(products.id)];
 
+  // count(*) over() rather than a second query repeating the same join and where clause purely
+  // for the total — one round trip, and both halves computed over the same snapshot.
   const baseQuery = db
-    .select(productWithCategory)
+    .select({ ...productWithCategory, totalCount: sql<number>`count(*) over()::int` })
     .from(products)
     .innerJoin(categories, eq(products.categoryId, categories.id));
 
   const filtered = whereClause ? baseQuery.where(whereClause) : baseQuery;
 
-  const [items, countRows] = await Promise.all([
-    filtered
-      .orderBy(...orderBy)
-      .limit(filters.pageSize)
-      .offset((filters.page - 1) * filters.pageSize),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(products)
-      .innerJoin(categories, eq(products.categoryId, categories.id))
-      .where(whereClause),
-  ]);
+  const rows = await filtered
+    .orderBy(...orderBy)
+    .limit(filters.pageSize)
+    .offset((filters.page - 1) * filters.pageSize);
 
   return {
-    items,
-    total: countRows[0]?.count ?? 0,
+    ...splitPagedRows(rows),
     page: filters.page,
     pageSize: filters.pageSize,
   };
