@@ -183,7 +183,8 @@ const offerReservePayAmounts = defineTool({
     "balance — never pick the amount yourself. Blocks nothing: it renders the options and waits " +
     "for the customer to tap one, which is what tells you the amount for start_reserve_pay_setup. " +
     "Works for a top-up too: the options cover the whole cart, since replacing a block returns " +
-    "the old one's balance to the customer.",
+    "the old one's balance to the customer — whatever they pick becomes their ENTIRE new " +
+    "balance, never added to the amount that was released.",
   input: emptySchema,
   readOnly: true,
   handler: async (ctx) => {
@@ -193,7 +194,11 @@ const offerReservePayAmounts = defineTool({
 
     // Replacing an existing block releases its balance back to the customer, so the options are
     // sized against the whole cart either way — never against the shortfall.
-    const replacing = (await reservePayService.getLiveMandate(ctx.userId)) !== null;
+    const liveMandate = await reservePayService.getLiveMandate(ctx.userId);
+    const replacing = liveMandate !== null;
+    const previousRemaining = liveMandate
+      ? Math.round(reservePayService.remainingPaise(liveMandate) / 100)
+      : null;
 
     // Every legal block is capped at RESERVE_PAY_MAX_AMOUNT, so a cart above it can never be
     // covered. Say so rather than offering an amount that buys a PIN approval and still fails.
@@ -212,6 +217,17 @@ const offerReservePayAmounts = defineTool({
       maxAmount: RESERVE_PAY_MAX_AMOUNT,
       validityDays: RESERVE_PAY_DEFAULT_EXPIRY_DAYS,
       mode: replacing ? ("top_up" as const) : ("setup" as const),
+      // A model that has just seen `previousRemaining` and is about to see a new amount is
+      // exactly where "2000 + 1250 = 3250" happens — say the correct arithmetic explicitly
+      // rather than relying on a rule read once, earlier, in the tool description.
+      ...(previousRemaining !== null
+        ? {
+            note:
+              `Replacing releases the ₹${previousRemaining} still on the current block back to ` +
+              "the customer. Whichever amount they pick next becomes their entire new balance " +
+              `once approved — it is not added to the ₹${previousRemaining} being released.`,
+          }
+        : {}),
       nextStep: replacing
         ? "The widget shows the options. Wait for the customer to choose, then call start_reserve_pay_setup with that amount and replaceExisting: true."
         : "The widget shows the options. Wait for the customer to choose — do not call start_reserve_pay_setup yet.",
@@ -227,15 +243,36 @@ const startReservePaySetup = defineTool({
     "sending them the link, poll check_reserve_pay_status until it reports active. The customer " +
     "can only have one balance at a time, so topping up is a replacement: pass replaceExisting " +
     "to revoke the current block and create a bigger one. Only do that when they asked for it. " +
+    "The new amount is the customer's ENTIRE balance once approved, not added to what the old " +
+    "block had — the response's `note` field states this with the actual numbers whenever " +
+    "replaceExisting applies; read it before telling the customer their balance. " +
     "If you are an external agent you receive approvalUrl, a page showing the amount, the account " +
     "and the UPI app buttons — send the customer that link, never a raw upi:// string.",
   input: startReservePaySetupSchema,
   readOnly: false,
   handler: async (ctx, input) => {
+    // Snapshotted before createMandate revokes it — this is the only chance to state what's
+    // being released, since createMandate's own revoke leaves nothing to read it back from.
+    const previousRemaining = input.replaceExisting
+      ? await reservePayService.getLiveMandate(ctx.userId).then((live) =>
+          live ? Math.round(reservePayService.remainingPaise(live) / 100) : null
+        )
+      : null;
+
     const mandate = await reservePayService.createMandate(ctx.userId, input);
     const approvalUrl = mandate.approvalToken
       ? new URL(`/approve/${mandate.approvalToken}`, env.PUBLIC_APP_URL).toString()
       : null;
+
+    // The exact bug this guards against: a model that just saw the old remaining balance and the
+    // new amount narrates their sum instead of the replacement. State the correct arithmetic
+    // here, next to the numbers, rather than trusting a rule read once at session start.
+    const note =
+      previousRemaining !== null
+        ? `This replaces the old block — its ₹${previousRemaining} was released, not added. Once ` +
+          `approved, the customer's balance is exactly ₹${input.amountInRupees}, never ` +
+          `₹${input.amountInRupees} + ₹${previousRemaining}.`
+        : undefined;
 
     // An agent has no widget to render into, so a raw upi:// string would reach the customer as
     // unreadable text they cannot tap on a desktop. Withholding it rather than merely advising
@@ -245,6 +282,7 @@ const startReservePaySetup = defineTool({
       return {
         mandate: toAgentMandate(mandate),
         approvalUrl,
+        ...(note ? { note } : {}),
         nextStep:
           "Send the customer approvalUrl and nothing else — never a upi:// link. Then poll check_reserve_pay_status until status is active.",
       };
@@ -256,6 +294,7 @@ const startReservePaySetup = defineTool({
       intentUrl: mandate.intentUrl,
       intentLinks: mandate.intentLinks,
       approvalUrl,
+      ...(note ? { note } : {}),
       nextStep:
         "The widget shows the approval buttons. Poll check_reserve_pay_status until status is active.",
     };

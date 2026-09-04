@@ -1,4 +1,4 @@
-import { MAX_CART_ITEM_QTY } from "../../constants";
+import { DELIVERY_FEE, FREE_DELIVERY_THRESHOLD, MAX_CART_ITEM_QTY } from "../../constants";
 import * as auditService from "../../services/auditService";
 import * as cartService from "../../services/cartService";
 import * as productService from "../../services/productService";
@@ -42,7 +42,7 @@ const getCart = defineTool({
   name: "get_cart",
   description:
     "The customer's current cart with line items and totals, priced live. Delivery is free over " +
-    "₹199, otherwise ₹25.",
+    `₹${FREE_DELIVERY_THRESHOLD}, otherwise ₹${DELIVERY_FEE}.`,
   input: emptySchema,
   readOnly: true,
   handler: async (ctx) => currentCart(ctx),
