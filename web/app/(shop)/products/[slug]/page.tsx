@@ -15,6 +15,7 @@ import { AddToCartButton } from "@/components/product/add-to-cart-button";
 import { WishlistButton } from "@/components/product/wishlist-button";
 import { RatingStars } from "@/components/common/rating-stars";
 import { ProductCarousel } from "@/components/product/product-carousel";
+import { ErrorState } from "@/components/common/error-state";
 import {
   getCategoryBySlug,
   getProductBySlug,
@@ -34,10 +35,12 @@ export default async function ProductDetailPage({
     notFound();
   }
 
-  // Secondary data — never let a failure here blank an otherwise-loadable product page.
+  // Secondary data — never let a failure here blank an otherwise-loadable product
+  // page. `related` is null when the call *failed* and [] when there genuinely
+  // are none, so the strip can say which rather than silently vanishing.
   const [category, related] = await Promise.all([
     getCategoryBySlug(product.categorySlug).catch(() => null),
-    getRelatedProducts(slug, 5).catch(() => []),
+    getRelatedProducts(slug, 5).catch(() => null),
   ]);
 
   return (
@@ -139,12 +142,20 @@ export default async function ProductDetailPage({
         </div>
       </div>
 
-      {related.length > 0 && (
+      {(related === null || related.length > 0) && (
         <div className="mt-12 space-y-4">
           <h2 className="font-heading text-xl font-semibold">
             You may also like
           </h2>
-          <ProductCarousel products={related} />
+          {related === null ? (
+            <ErrorState
+              compact
+              title="Couldn't load related products"
+              description="The rest of this page is fine — this section will be back shortly."
+            />
+          ) : (
+            <ProductCarousel products={related} />
+          )}
         </div>
       )}
     </div>

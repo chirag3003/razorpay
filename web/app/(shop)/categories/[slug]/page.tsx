@@ -8,6 +8,7 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { ProductGrid } from "@/components/product/product-grid";
+import { ErrorState } from "@/components/common/error-state";
 import { ProductSort } from "@/components/product/product-sort";
 import { ProductPagination } from "@/components/product/product-pagination";
 import { getCategoryBySlug, getProducts } from "@/lib/api/catalog";
@@ -40,17 +41,22 @@ export default async function CategoryPage({
   const sort = (raw.sort as SortOption | undefined) ?? "popularity";
   const page = Math.max(1, toNumber(raw.page) ?? 1);
 
-  const { items: results, total } = await getProducts({
+  // Degrade per section, as app/(shop)/page.tsx does: a 5xx or a dropped
+  // connection on the listing shouldn't take the category header down with it.
+  const products = await getProducts({
     categorySlugs: [slug],
     tags,
     inStockOnly,
     sort,
     page,
     pageSize: PAGE_SIZE,
-  });
+  }).catch(() => null);
 
+  const total = products?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  redirectIfPageOutOfRange(`/categories/${slug}`, raw, page, totalPages);
+  if (products) {
+    redirectIfPageOutOfRange(`/categories/${slug}`, raw, page, totalPages);
+  }
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -84,23 +90,32 @@ export default async function CategoryPage({
         </div>
       </div>
 
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">
-          {total} product{total !== 1 && "s"}
-        </p>
-        <ProductSort />
-      </div>
-
-      <ProductGrid products={results} />
-
-      <div className="pt-4">
-        <ProductPagination
-          pathname={`/categories/${slug}`}
-          searchParams={toURLSearchParams(raw)}
-          page={page}
-          totalPages={totalPages}
+      {products === null ? (
+        <ErrorState
+          title="Couldn't load these products"
+          description="We couldn't reach the server. This is usually temporary — please try again in a moment."
         />
-      </div>
+      ) : (
+        <>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              {total} product{total !== 1 && "s"}
+            </p>
+            <ProductSort />
+          </div>
+
+          <ProductGrid products={products.items} />
+
+          <div className="pt-4">
+            <ProductPagination
+              pathname={`/categories/${slug}`}
+              searchParams={toURLSearchParams(raw)}
+              page={page}
+              totalPages={totalPages}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }
