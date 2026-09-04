@@ -99,3 +99,21 @@ export class InsufficientBalanceError extends DomainError {
     super(message, 402, "INSUFFICIENT_BLOCKED_BALANCE");
   }
 }
+
+// --- Voice (Sarvam AI) --------------------------------------------------------------------
+
+// Sarvam refused or was unreachable. 502 for the same reason PaymentGatewayError is: the request
+// was fine, the upstream let us down. The caller's recovery is to fall back to text.
+export class VoiceServiceError extends DomainError {
+  constructor(message = "Voice service request failed") {
+    super(message, 502, "VOICE_SERVICE_ERROR");
+  }
+}
+
+// SARVAM_API_KEY is unset, so voice was never configured on this deployment. 503 rather than 502:
+// nothing is broken and retrying will not help — the storefront should hide the mic entirely.
+export class VoiceUnavailableError extends DomainError {
+  constructor(message = "Voice is not configured on this server") {
+    super(message, 503, "VOICE_UNAVAILABLE");
+  }
+}

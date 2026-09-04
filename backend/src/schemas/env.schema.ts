@@ -71,6 +71,12 @@ export const envSchema = z.object({
   // OpenRouter attribution headers, and the base for storefront hrefs in chat widgets.
   PUBLIC_APP_URL: z.url().default("http://localhost:3000"),
 
+  // Sarvam AI powers chat voice input/output (speech-to-text, translate, text-to-speech).
+  // Optional on purpose: unset simply disables the mic, and /api/voice/* answers 503 with
+  // VOICE_UNAVAILABLE. Text chat is unaffected either way — voice is an enhancement, not a
+  // dependency, so a missing key must not stop the backend booting.
+  SARVAM_API_KEY: z.string().optional(),
+
   // This backend's own externally-reachable origin, used to build the absolute URLs in the RFC
   // 8414/9728 metadata documents. Local dev against a remote MCP client needs a tunnel (ngrok),
   // same as the webhook receiver.

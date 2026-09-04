@@ -195,3 +195,53 @@ export const LIVE_MANDATE_STATUSES = ["pending", "confirmed", "paused"] as const
 export const RESERVE_PAY_DEBIT_STATUSES = ["created", "captured", "failed"] as const;
 
 export type ReservePayDebitStatus = (typeof RESERVE_PAY_DEBIT_STATUSES)[number];
+
+// --- Voice (Sarvam AI) --------------------------------------------------------------------
+
+// Ceiling on a voice upload. Well above 30s of any codec Sarvam accepts (30s of WebM/Opus is
+// ~120 KB; of AAC at 128 kbps, ~480 KB) while still bounding what one request can cost us.
+// Voice is mounted ahead of the global MAX_REQUEST_BODY_BYTES limit in server.ts precisely
+// because audio does not fit under 256 KB — see the comment there.
+export const MAX_VOICE_UPLOAD_BYTES = 4 * 1024 * 1024;
+
+// The REST speech-to-text endpoint is documented for clips under 30 seconds; longer needs the
+// batch API, which is out of scope. The recorder stops itself at this length, so the ceiling is
+// enforced on both sides.
+export const MAX_VOICE_CLIP_SECONDS = 30;
+
+// bulbul caps a single synthesis request. Over-long replies are truncated at a sentence boundary
+// rather than rejected — a slightly short spoken answer beats silence.
+export const MAX_TTS_INPUT_CHARS = 1500;
+
+// saaras:v3 transcribes all 23 scheduled languages; `mode: "translate"` hands us English back
+// regardless of what was spoken, which is what lets the English-only agent answer at all.
+export const SARVAM_STT_MODEL = "saaras:v3";
+export const SARVAM_TRANSLATE_MODEL = "mayura:v1";
+export const SARVAM_TTS_MODEL = "bulbul:v3";
+export const SARVAM_TTS_SPEAKER = "anushka";
+
+export const DEFAULT_VOICE_LANGUAGE = "en-IN";
+
+// Languages bulbul can actually *speak*. Deliberately narrower than the set saaras can
+// transcribe: a customer may speak Santali and be understood, but there is no voice to answer
+// them in, and asking for one returns a 400 from Sarvam. voiceService falls back to English
+// rather than failing the turn — see speak().
+export const SARVAM_TTS_LANGUAGES = [
+  "en-IN",
+  "hi-IN",
+  "bn-IN",
+  "gu-IN",
+  "kn-IN",
+  "ml-IN",
+  "mr-IN",
+  "od-IN",
+  "pa-IN",
+  "ta-IN",
+  "te-IN",
+] as const;
+
+export type VoiceLanguage = (typeof SARVAM_TTS_LANGUAGES)[number];
+
+export function isSpeakableLanguage(code: string): code is VoiceLanguage {
+  return (SARVAM_TTS_LANGUAGES as readonly string[]).includes(code);
+}

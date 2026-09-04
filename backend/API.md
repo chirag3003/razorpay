@@ -258,6 +258,9 @@ POST   /api/reserve-pay/mandates/debit   auth     test harness; only when RESERV
 POST   /api/chat                         auth     SSE; the storefront chat agent
 GET    /api/chat/:conversationId         auth     rendered transcript, no model call
 
+POST   /api/voice/transcribe             auth     multipart audio -> English text + spoken language
+POST   /api/voice/speak                  auth     English text + language -> base64 WAV
+
 POST   /api/mcp                          agent    MCP tool server (see §6.14) — Bearer is an OAuth
                                                    access token, never a copy-pasted human JWT
 GET    /.well-known/oauth-protected-resource/api/mcp   public   RFC 9728
@@ -993,6 +996,59 @@ deleted, and the storefront re-reads its cart when a `cart_summary` part arrives
 remember when changing a part type: `CHAT_PROTOCOL_VERSION` (now **4**) guards the *request*, not
 parts already persisted in `chat_messages.parts` or the client's `sessionStorage` — see
 `backend/issues.md`.
+
+---
+
+### 6.13a Chat voice — `POST /api/voice/transcribe` and `POST /api/voice/speak`
+
+Speech in and speech out for the chat panel, backed by Sarvam AI. Both routes require the normal
+human session JWT. They are **independent of `/api/chat`** — the storefront transcribes, sends the
+resulting text as an ordinary chat turn, and then asks for the reply to be spoken. Nothing in the
+chat protocol knows a turn was spoken, and `CHAT_PROTOCOL_VERSION` does not cover these routes.
+
+**Availability.** Both answer `503 VOICE_UNAVAILABLE` when the server has no `SARVAM_API_KEY`.
+Treat that as "hide the mic", not as an error worth a toast — text chat is unaffected. Every other
+failure is `502 VOICE_SERVICE_ERROR`, meaning Sarvam refused or was unreachable; the caller should
+fall back to text rather than retrying in a loop.
+
+#### `POST /api/voice/transcribe`
+
+`multipart/form-data` with one field, `file`. WAV, MP3, AAC, OGG, OPUS, FLAC, MP4/M4A and WebM are
+all accepted, so a browser `MediaRecorder` blob can be posted as-is with **no transcoding**.
+
+- **Keep clips under 30 seconds.** This is the synchronous transcription path; longer audio needs
+  Sarvam's batch API, which is not exposed here.
+- Bodies over 4 MB are rejected with `413 PAYLOAD_TOO_LARGE`. That is far above 30s of any
+  supported codec — it is an abuse bound, not a working limit.
+- `400 VALIDATION` if the body has no `file` field, or if the clip contained no detectable speech.
+
+```json
+{ "transcript": "add two litres of milk to my cart", "languageCode": "hi-IN" }
+```
+
+**`transcript` is always English**, whichever of the 23 supported languages was spoken — the
+transcription runs in translate mode so the English-only chat agent can act on it. `languageCode`
+is BCP-47 for what was *actually* spoken, and is the value to pass back to `/speak`. It falls back
+to `en-IN` when detection is inconclusive.
+
+#### `POST /api/voice/speak`
+
+```json
+{ "text": "I've added two litres of milk.", "languageCode": "hi-IN" }
+```
+
+`text` is the assistant's reply **in English**; `languageCode` defaults to `en-IN`. When it is
+anything else, the text is translated before synthesis.
+
+```json
+{ "audio": "<base64 WAV>", "languageCode": "hi-IN" }
+```
+
+`audio` is base64 — decode it to bytes before playing (`atob` → `Uint8Array` → `Blob` of type
+`audio/wav`). **Check `languageCode` in the response, not the one you sent:** more languages can be
+transcribed than can be spoken, so a request for a language with no voice comes back synthesised in
+`en-IN` rather than failing. Over-long text is truncated at a sentence boundary rather than
+rejected.
 
 ---
 

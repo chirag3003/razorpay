@@ -14,6 +14,7 @@ import { orderRoutes } from "./routes/orders";
 import { reservePayRoutes } from "./routes/reserve-pay";
 import { reservePayApprovalRoutes } from "./routes/reserve-pay-approval";
 import { chatRoutes } from "./routes/chat";
+import { voiceRoutes } from "./routes/voice";
 import { adminRoutes } from "./routes/admin";
 import { oauthRoutes } from "./routes/oauth";
 import { mcpRoutes } from "./routes/mcp";
@@ -35,6 +36,25 @@ app.use("*", async (c, next) => {
   });
 });
 
+app.use(
+  "*",
+  cors({
+    origin: env.CORS_ORIGIN,
+    allowHeaders: ["Content-Type", "Authorization"],
+    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  })
+);
+
+app.get("/", (c) => c.json({ status: "ok" }));
+
+// Mounted between CORS and the global body limit, and the position is load-bearing in both
+// directions. Audio does not fit under MAX_REQUEST_BODY_BYTES (256 KB) — the smallest useful
+// clip is several times that — and Hono matches in registration order, so answering here means
+// that middleware is never reached. Below CORS, because a browser calls this like any other
+// route. Not unbounded: routes/voice.ts applies requireAuth and its own
+// MAX_VOICE_UPLOAD_BYTES ceiling.
+app.route("/api/voice", voiceRoutes);
+
 // After the logger so an over-size request still produces one http line, before the routes so no
 // handler ever sees the body. Answers the domain-error shape onError would produce, since the
 // middleware short-circuits rather than throwing a DomainError.
@@ -46,17 +66,6 @@ app.use(
       c.json({ error: "Request body is too large", code: "PAYLOAD_TOO_LARGE" }, 413),
   })
 );
-
-app.use(
-  "*",
-  cors({
-    origin: env.CORS_ORIGIN,
-    allowHeaders: ["Content-Type", "Authorization"],
-    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  })
-);
-
-app.get("/", (c) => c.json({ status: "ok" }));
 
 app.route("/api/auth", authRoutes);
 app.route("/api/categories", categoryRoutes);
