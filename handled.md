@@ -116,6 +116,23 @@ trace.
 
 ## 5. Agent and LLM layer
 
+**Every LLM round is time-bounded, on our side of the SDK.** `withTimeout` in `llm/agentLoop.ts`
+caps both the initial request and each individual stream chunk at `LLM_ROUND_TIMEOUT_MS`, and a
+breach becomes a logged error plus a retryable `failed` event. This cannot be done with an
+`AbortSignal`: `@openrouter/sdk` does not reject when the signal it was given fires — the promise
+never settles — so the request signal is deliberately **not** passed to it, and the loop instead
+checks `signal.aborted` between chunks to stop serving a closed panel. The abandoned fetch is left
+to finish on its own; leaking a background request is strictly better than a turn that hangs
+forever with the SSE stream open, the client showing only `message_start`, and nothing logged
+(the round log runs only after the stream completes).
+
+**Chat history is replayed in true insertion order.** `chat_messages.seq` (bigserial) is the only
+column safe to order by. `created_at` cannot do it — `defaultNow()` is *transaction start* time and
+`persistTurn` writes a whole turn in one transaction, so every row of a turn carries an identical
+timestamp and ordering by it returns them arbitrarily. That detached `tool` rows from the
+`assistant` row that called them, and the consequence was not a clean rejection: the provider
+accepted the request and never answered.
+
 **Chat history is truncated on a turn boundary, never mid-round.** `loadHistory` reads the last
 `MAX_HISTORY_MESSAGES` rows with an `ORDER BY created_at DESC LIMIT` (over-fetching, since
 trimming only discards), then walks forward to the first row that can legally begin a request — a
@@ -125,7 +142,10 @@ whose matching `assistant` is missing is rejected with a 400 by every OpenAI-com
 That failure was **not transient**: history only grows, so a conversation that crossed the
 boundary unluckily failed identically on every subsequent turn. If no safe boundary exists in the
 whole window, history is dropped for that turn and a WARN is logged — the turn loses context but
-succeeds, where sending a fragment is a guaranteed 400.
+succeeds, where sending a fragment is a guaranteed 400. As a final guard,
+`dropOrphanedToolMessages` removes any `tool` message whose matching `assistant` call is not open,
+logging a WARN; ordering by `seq` should make it unreachable, but the cost of being wrong is a
+wedged request rather than a bad answer.
 
 **`runTool` never throws** (`agent-interfaces/tools/registry.ts:202`). A model cannot catch an
 exception, so every failure becomes data: `{ok: false, error}`.

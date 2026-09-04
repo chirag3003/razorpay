@@ -38,6 +38,32 @@ function isEventStream(
   return typeof value === "object" && value !== null && Symbol.asyncIterator in value;
 }
 
+/**
+ * Rejects if `promise` has not settled within LLM_ROUND_TIMEOUT_MS.
+ *
+ * A plain AbortSignal cannot do this job: `@openrouter/sdk` does not reject when the signal it
+ * was given fires — the promise never settles at all (verified against the live SDK). So the
+ * timeout has to live on our side of the call, and the abandoned request is left running rather
+ * than cancelled. Leaking a background fetch is strictly better than the alternative, which is a
+ * chat turn that hangs forever: the SSE stream stays open, the client sees `message_start` and
+ * nothing more, and nothing is logged, because the round log only runs once the stream completes.
+ *
+ * Observed for real: a malformed message array (an orphaned `tool` message, which is what
+ * unordered history used to produce) made the provider accept the request and never answer.
+ */
+function withTimeout<T>(promise: Promise<T>, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${what} timed out after ${LLM_ROUND_TIMEOUT_MS}ms`)),
+      LLM_ROUND_TIMEOUT_MS
+    );
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 /** Token counts for one round. Null when the provider omits usage from the stream. */
 type RoundUsage = { prompt: number; completion: number; total: number };
 
@@ -61,7 +87,8 @@ async function* streamOnce(
   signal: AbortSignal | undefined
 ): AsyncGenerator<LoopEvent, RoundResult> {
   const startedAt = Date.now();
-  const response = await openrouter.chat.send(
+  const response = await withTimeout(
+    openrouter.chat.send(
     {
       chatRequest: {
         model: modelChain[0],
@@ -81,16 +108,14 @@ async function* streamOnce(
         stream: true,
       },
     },
-    // Always time-bounded, and aborted early if the caller (a closed chat panel) goes away. A
-    // provider that accepts a request and never answers would otherwise hang the turn forever
-    // with no error and no log — see LLM_ROUND_TIMEOUT_MS.
-    {
-      fetchOptions: {
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(LLM_ROUND_TIMEOUT_MS)])
-          : AbortSignal.timeout(LLM_ROUND_TIMEOUT_MS),
-      },
-    }
+    // No `signal` here, deliberately — see withTimeout. @openrouter/sdk does not reject when its
+    // abort signal fires; the promise simply never settles. Handing it one turns every abandoned
+    // chat request into a permanently wedged turn. The loop below still checks `signal.aborted`
+    // between chunks, so a closed panel stops being served promptly; the underlying fetch is
+    // left to finish on its own rather than cancelled.
+      {}
+    ),
+    "OpenRouter request"
   );
 
   if (!isEventStream(response)) {
@@ -105,7 +130,15 @@ async function* streamOnce(
   let usage: RoundUsage | null = null;
   const byIndex = new Map<number, PendingToolCall>();
 
-  for await (const chunk of response) {
+  // Manual iteration so every chunk is individually time-bounded — a stream that opens and then
+  // stalls is the same failure as one that never opens.
+  const iterator = (response as AsyncIterable<any>)[Symbol.asyncIterator]();
+
+  while (true) {
+    const next = await withTimeout(iterator.next(), "OpenRouter stream chunk");
+    if (next.done) break;
+    const chunk = next.value;
+
     if (signal?.aborted) break;
 
     if (chunk.error) {

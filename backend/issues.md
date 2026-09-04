@@ -229,10 +229,14 @@ same change.
 
 ## Backlog — not scheduled
 
-- **`S2`** — `chat_messages` row ordering within a turn is not deterministic. `defaultNow()` emits
-  Postgres `now()`, which is *transaction start time*, so every row `persistTurn` writes carries
-  an identical timestamp, and both readers order by `createdAt` alone. Index order is the likely
-  tiebreak today but nothing guarantees it. Needs an ordinal column and a migration.
+> **`S2` is closed** — it was not a latent risk. Ordering `chat_messages` by `createdAt` alone
+> really did return a turn's rows arbitrarily, which detached `tool` rows from their `assistant`
+> row; the provider then accepted the request and **never responded**, hanging the chat turn with
+> no error and no log. Fixed with a `seq` bigserial column (backfilled in physical order, which
+> was verified to be the true insertion order) plus a real request timeout, since the SDK does not
+> honour abort signals. See the "chat gets stuck" commits.
+
+
 - **`S6` / `S7`** — live agent access tokens survive refresh-token revocation for up to 24h (no
   `jti`, no denylist), and a replayed refresh token does not revoke its family. Descoped with
   agent revocation; revisit if a "connected agents" view is ever built.
