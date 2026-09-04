@@ -1,7 +1,12 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { cartItems, carts, products } from "../db/schema";
-import { EmptyCartError, NotFoundError, ValidationError } from "../errors";
+import {
+  EmptyCartError,
+  NotFoundError,
+  ProductUnavailableError,
+  ValidationError,
+} from "../errors";
 import { getDeliveryFee, MAX_CART_ITEM_QTY } from "../constants";
 
 // Cart is server-side, referenced by id (backend/CLAUDE.md "Cart Handling") — every function
@@ -35,12 +40,19 @@ async function assertItemBelongsToCart(cartId: string, itemId: string) {
 
 export async function addItem(cartId: string, productId: string, qty: number) {
   const [product] = await db
-    .select({ id: products.id, name: products.name })
+    .select({ id: products.id, name: products.name, inStock: products.inStock })
     .from(products)
     .where(and(eq(products.id, productId), isNull(products.archivedAt)))
     .limit(1);
 
   if (!product) throw new NotFoundError("Product");
+
+  // archivedAt hides a product that can never be sold again; inStock hides one that cannot be
+  // sold right now. Checking only the first let the storefront add and check out an out-of-stock
+  // product while the agent path correctly refused it.
+  if (!product.inStock) {
+    throw new ProductUnavailableError(`${product.name} is out of stock.`);
+  }
 
   const [existing] = await db
     .select()
