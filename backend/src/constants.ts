@@ -2,6 +2,12 @@
 
 export const CURRENCY = "INR";
 
+// Ceiling on any request body. Unauthenticated routes (/api/auth/*, /oauth/register, /oauth/token,
+// /webhooks/razorpay) otherwise accept an arbitrarily large body — a cheap memory/CPU lever.
+// Generous on purpose: the largest legitimate bodies are a chat turn's clientState and an MCP
+// tool call, both well under 100 KB.
+export const MAX_REQUEST_BODY_BYTES = 256 * 1024;
+
 // Storefront pricing (in rupees, matching how products.price/mrp are stored).
 export const FREE_DELIVERY_THRESHOLD = 199;
 export const DELIVERY_FEE = 25;

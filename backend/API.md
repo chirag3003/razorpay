@@ -713,7 +713,8 @@ produces an order row for the money it moves. Returns `201` with the debit and R
 **Not registered by default.** It moves real money for any authenticated caller and creates
 nothing to reconcile against, so it exists as a route only when `RESERVE_PAY_TEST_DEBIT_ROUTE=true`
 — the same "not registered at all in a real deployment" treatment the `/sim/*` controls get.
-Without the flag it answers `404`. Boot logs a warning if it is enabled against live keys.
+Without the flag it answers `404` (or `401` first, if the caller has no token — `reservePayRoutes`
+guards `*` before matching). Boot logs a warning if it is enabled against live keys.
 
 **`POST /api/cart/checkout/reserve-pay`** — the headless counterpart to §6.8. Body is identical
 to `/checkout/initiate`: `{ "addressId": "<uuid>", "deliverySlot": "Today, 4:00 PM - 6:00 PM" }`. Returns

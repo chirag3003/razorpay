@@ -152,6 +152,14 @@ into a user-facing failure after the user already got what they asked for.
   (`agent-interfaces/tools/checkout.ts:63`, `remainingAfterCharge`) — returns `0` rather than
   throwing, so a failed follow-up read cannot turn a completed order into a reported failure.
 
+**Over-size request bodies** are refused before any handler sees them.
+`hono/body-limit` runs globally in `server.ts` at `MAX_REQUEST_BODY_BYTES` (256 KB), after the
+request logger — so an over-size request still produces one `http` log line — and answers
+`413 {error, code: "PAYLOAD_TOO_LARGE"}` in the same shape `onError` produces for a `DomainError`.
+It sits above the unauthenticated routes (`/api/auth/*`, `/oauth/register`, `/oauth/token`,
+`/webhooks/razorpay`), and the webhook's raw-body signature read (`c.req.text()`) still works
+underneath it.
+
 ## 7. Anti-probing
 
 Failures are shaped so a caller learns nothing from them.

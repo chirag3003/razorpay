@@ -1,7 +1,9 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { env } from "./config/env";
+import { MAX_REQUEST_BODY_BYTES } from "./constants";
 import { DomainError } from "./errors";
 import { authRoutes } from "./routes/auth";
 import { categoryRoutes } from "./routes/categories";
@@ -32,6 +34,18 @@ app.use("*", async (c, next) => {
     userId: c.get("userId"),
   });
 });
+
+// After the logger so an over-size request still produces one http line, before the routes so no
+// handler ever sees the body. Answers the domain-error shape onError would produce, since the
+// middleware short-circuits rather than throwing a DomainError.
+app.use(
+  "*",
+  bodyLimit({
+    maxSize: MAX_REQUEST_BODY_BYTES,
+    onError: (c) =>
+      c.json({ error: "Request body is too large", code: "PAYLOAD_TOO_LARGE" }, 413),
+  })
+);
 
 app.use(
   "*",
