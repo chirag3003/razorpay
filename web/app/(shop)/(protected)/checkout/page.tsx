@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { toast } from "sonner";
-import { Plus, ShoppingBag } from "lucide-react";
+import { Loader2, MailCheck, Plus, ShoppingBag } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -22,13 +23,18 @@ import { CartSummary } from "@/components/cart/cart-summary";
 import { CartLineItem } from "@/components/cart/cart-line-item";
 import { EmptyState } from "@/components/common/empty-state";
 import { useCartSummary, useCartStore } from "@/store/cart-store";
-import { useAuthStore } from "@/store/auth-store";
+import { useAuthStore, handleAuthApiError } from "@/store/auth-store";
 import { getAddresses, createAddress } from "@/lib/api/addresses";
 import { initiateCheckout, verifyCheckout } from "@/lib/api/checkout";
+import { getOrders } from "@/lib/api/orders";
 import { loadRazorpayCheckout } from "@/lib/razorpay";
 import { ApiError } from "@/lib/api/client";
 import type { Address } from "@/lib/types";
 import type { AddressFormValues } from "@/lib/validation";
+
+/** Long enough for the webhook to land, short enough not to feel abandoned. */
+const CONFIRM_POLL_MS = 3000;
+const CONFIRM_ATTEMPTS = 10;
 
 export default function CheckoutPage() {
   const router = useRouter();
@@ -44,6 +50,11 @@ export default function CheckoutPage() {
   const [addressDialogOpen, setAddressDialogOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState("");
   const [placingOrder, setPlacingOrder] = useState(false);
+  // Set when the payment was captured but /verify didn't come back: the order
+  // exists (or shortly will, via the payment.captured webhook), so this polls
+  // for it rather than telling the customer their payment failed.
+  const [confirmingOrderId, setConfirmingOrderId] = useState<string | null>(null);
+  const [confirmTimedOut, setConfirmTimedOut] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -54,7 +65,10 @@ export default function CheckoutPage() {
           fetched.find((a) => a.isDefault)?.id ?? fetched[0]?.id ?? ""
         );
       })
-      .catch(() => toast.error("Couldn't load your addresses"))
+      .catch((err) => {
+        if (handleAuthApiError(err)) return;
+        toast.error("Couldn't load your addresses");
+      })
       .finally(() => setAddressesLoading(false));
   }, [token]);
 
@@ -63,6 +77,87 @@ export default function CheckoutPage() {
       router.replace("/cart");
     }
   }, [itemCount, placingOrder, router]);
+
+  // Money has already moved by the time this runs, so it never resolves to an
+  // error: it either finds the order or hands the customer a reassurance state.
+  // The order is written server-side by the `payment.captured` webhook even when
+  // the /verify call the client made never came back.
+  useEffect(() => {
+    if (!confirmingOrderId || !token) return;
+    let ignore = false;
+    let attempts = 0;
+
+    async function poll() {
+      attempts += 1;
+      try {
+        const orders = await getOrders(token!);
+        const match = orders.find(
+          (order) => order.razorpayOrderId === confirmingOrderId
+        );
+        if (ignore) return;
+        if (match) {
+          clearInterval(id);
+          await fetchCart();
+          router.push(`/checkout/success?order=${match.orderNumber}`);
+          return;
+        }
+      } catch {
+        // Keep polling — a failed poll says nothing about the payment.
+      }
+      if (!ignore && attempts >= CONFIRM_ATTEMPTS) {
+        clearInterval(id);
+        setConfirmTimedOut(true);
+      }
+    }
+
+    const id = setInterval(() => void poll(), CONFIRM_POLL_MS);
+    void poll();
+
+    return () => {
+      ignore = true;
+      clearInterval(id);
+    };
+  }, [confirmingOrderId, token, router, fetchCart]);
+
+  if (confirmingOrderId) {
+    return (
+      <div className="mx-auto max-w-lg px-4 py-16">
+        <Card className="flex flex-col items-center gap-3 p-8 text-center">
+          {confirmTimedOut ? (
+            <>
+              <MailCheck className="size-8 text-primary" />
+              <h1 className="font-heading text-xl font-semibold">
+                Your payment went through
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                We&apos;re still confirming the order on our side. It will appear
+                in your orders shortly — if it doesn&apos;t, we&apos;ll email you.
+                You have not been charged twice.
+              </p>
+              <Button
+                className="mt-2"
+                nativeButton={false}
+                render={<Link href="/orders" />}
+              >
+                View my orders
+              </Button>
+            </>
+          ) : (
+            <>
+              <Loader2 className="size-8 animate-spin text-muted-foreground" />
+              <h1 className="font-heading text-xl font-semibold">
+                Confirming your payment
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Your payment went through. We&apos;re finishing up your order —
+                please don&apos;t close this window.
+              </p>
+            </>
+          )}
+        </Card>
+      </div>
+    );
+  }
 
   if (itemCount === 0) {
     return (
@@ -88,7 +183,8 @@ export default function CheckoutPage() {
       setSelectedAddressId(address.id);
       setAddressDialogOpen(false);
       toast.success("Address saved");
-    } catch {
+    } catch (err) {
+      if (handleAuthApiError(err)) return;
       toast.error("Couldn't save address");
     }
   }
@@ -124,12 +220,19 @@ export default function CheckoutPage() {
             await fetchCart();
             router.push(`/checkout/success?order=${order.orderNumber}`);
           } catch (err) {
-            toast.error(
-              err instanceof ApiError
-                ? err.message
-                : "Payment verification failed"
-            );
-            setPlacingOrder(false);
+            // A bad signature is a real failure and keeps its error path. Every
+            // other error here lands *after* capture — a network blip in the
+            // moment after the money moved — and must never be presented as a
+            // failed payment.
+            if (
+              err instanceof ApiError &&
+              err.code === "PAYMENT_VERIFICATION_FAILED"
+            ) {
+              toast.error(err.message);
+              setPlacingOrder(false);
+              return;
+            }
+            setConfirmingOrderId(init.razorpayOrderId);
           }
         },
         modal: {
@@ -137,10 +240,11 @@ export default function CheckoutPage() {
         },
       }).open();
     } catch (err) {
+      setPlacingOrder(false);
+      if (handleAuthApiError(err)) return;
       toast.error(
         err instanceof ApiError ? err.message : "Couldn't start checkout"
       );
-      setPlacingOrder(false);
     }
   }
 

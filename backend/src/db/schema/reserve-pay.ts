@@ -6,6 +6,7 @@ import {
   timestamp,
   check,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./users";
@@ -57,6 +58,10 @@ export const reservePayMandates = pgTable(
     confirmedAt: timestamp("confirmed_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    // When syncMandate last actually reconciled against the gateway. Its own column rather than
+    // reusing updatedAt, which every unrelated write bumps — including the per-debit
+    // amount_debited increment, which is exactly the write that must NOT count as a fresh sync.
+    syncedAt: timestamp("synced_at"),
   },
   (t) => [
     check(
@@ -101,6 +106,8 @@ export const reservePayDebits = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
+    // The reconciliation ledger is always read per mandate.
+    index("reserve_pay_debits_mandate_idx").on(t.mandateId),
     check(
       "reserve_pay_debits_status_check",
       sql`${t.status} in (${sql.join(

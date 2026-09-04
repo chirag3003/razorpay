@@ -1,11 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { Loader2, ShoppingBag, Tag } from "lucide-react";
+import { Loader2, ShoppingBag } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { CartLineItem } from "@/components/cart/cart-line-item";
 import { CartSummary } from "@/components/cart/cart-summary";
 import { EmptyState } from "@/components/common/empty-state";
@@ -73,16 +71,6 @@ export default function CartPage() {
 
         <div className="space-y-4">
           <Card className="space-y-4 p-4">
-            <InputGroup>
-              <InputGroupAddon>
-                <Tag className="size-4" />
-              </InputGroupAddon>
-              <InputGroupInput placeholder="Promo code" />
-              <InputGroupAddon align="inline-end">
-                <InputGroupButton>Apply</InputGroupButton>
-              </InputGroupAddon>
-            </InputGroup>
-            <Separator />
             <CartSummary subtotal={subtotal} deliveryFee={deliveryFee} total={total} />
             <Button
               className="w-full"

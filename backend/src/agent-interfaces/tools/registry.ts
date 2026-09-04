@@ -50,6 +50,22 @@ function mapError(err: unknown): ToolError {
       case "NOT_FOUND":
         return { code: "not_found", message: err.message, retryable: false };
 
+      case "VALIDATION":
+        return {
+          code: "invalid_input",
+          message: err.message,
+          retryable: true,
+          hint: "Adjust the arguments to satisfy the limit and call the tool again.",
+        };
+
+      case "PRODUCT_UNAVAILABLE":
+        return {
+          code: "product_unavailable",
+          message: err.message,
+          retryable: false,
+          hint: "Offer an alternative — list_related_products will suggest items in the same category.",
+        };
+
       case "EMPTY_CART":
         return {
           code: "cart_empty",
@@ -119,7 +135,16 @@ function mapError(err: unknown): ToolError {
 
       case "UNAUTHORIZED":
       case "FORBIDDEN":
-        return { code: "not_found", message: "Not available", retryable: false };
+        // Deliberately indistinguishable from a genuine not_found, so a caller cannot probe
+        // whether an id exists. The anti-probing choice is right; the dead end was not — every
+        // other branch carries a hint, and this file's own comment says the hint is what turns a
+        // failure into a recovery. This one leaks nothing and still gives the model a next step.
+        return {
+          code: "not_found",
+          message: "Not available",
+          retryable: false,
+          hint: "That belongs to a different account. Call list_orders to see this customer's own orders.",
+        };
 
       default:
         return { code: "server", message: err.message, retryable: true };

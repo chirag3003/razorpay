@@ -103,7 +103,49 @@ the error is logged instead.
 payment) — and rethrows everything else, so genuine bugs still surface in the log rather than
 being silently eaten by the always-200 rule above.
 
+**Replay is safe on every branch.** `verifyWebhookSignature` proves a body came from Razorpay but
+nothing stops the same signed body being redelivered. Most handlers are naturally idempotent —
+`syncMandate` re-reads from the gateway, `confirmPayment` short-circuits on an existing order.
+`markDebitOutcome` (`services/reservePayService.ts`) is the one that was not, being an
+unconditional `UPDATE`; it is now a state machine (`DEBIT_STATUS_TRANSITIONS`) that permits
+`created -> captured|failed` and `failed -> captured` and **refuses `captured -> failed`**, so a
+stale `payment.failed` redelivered after a successful capture cannot flip the reconciliation
+ledger back. A refused transition logs a WARN and returns normally — a redelivery is not an error,
+but a refused `captured -> failed` is also what an ordering bug would look like, so it leaves a
+trace.
+
 ## 5. Agent and LLM layer
+
+**Every LLM round is time-bounded, on our side of the SDK.** `withTimeout` in `llm/agentLoop.ts`
+caps both the initial request and each individual stream chunk at `LLM_ROUND_TIMEOUT_MS`, and a
+breach becomes a logged error plus a retryable `failed` event. This cannot be done with an
+`AbortSignal`: `@openrouter/sdk` does not reject when the signal it was given fires — the promise
+never settles — so the request signal is deliberately **not** passed to it, and the loop instead
+checks `signal.aborted` between chunks to stop serving a closed panel. The abandoned fetch is left
+to finish on its own; leaking a background request is strictly better than a turn that hangs
+forever with the SSE stream open, the client showing only `message_start`, and nothing logged
+(the round log runs only after the stream completes).
+
+**Chat history is replayed in true insertion order.** `chat_messages.seq` (bigserial) is the only
+column safe to order by. `created_at` cannot do it — `defaultNow()` is *transaction start* time and
+`persistTurn` writes a whole turn in one transaction, so every row of a turn carries an identical
+timestamp and ordering by it returns them arbitrarily. That detached `tool` rows from the
+`assistant` row that called them, and the consequence was not a clean rejection: the provider
+accepted the request and never answered.
+
+**Chat history is truncated on a turn boundary, never mid-round.** `loadHistory` reads the last
+`MAX_HISTORY_MESSAGES` rows with an `ORDER BY created_at DESC LIMIT` (over-fetching, since
+trimming only discards), then walks forward to the first row that can legally begin a request — a
+`user` row, or an `assistant` row that called no tools. Cutting purely by row count could land
+between an `assistant` row carrying `toolCalls` and its `tool` result rows, and a `tool` message
+whose matching `assistant` is missing is rejected with a 400 by every OpenAI-compatible endpoint.
+That failure was **not transient**: history only grows, so a conversation that crossed the
+boundary unluckily failed identically on every subsequent turn. If no safe boundary exists in the
+whole window, history is dropped for that turn and a WARN is logged — the turn loses context but
+succeeds, where sending a fragment is a guaranteed 400. As a final guard,
+`dropOrphanedToolMessages` removes any `tool` message whose matching `assistant` call is not open,
+logging a WARN; ordering by `seq` should make it unreachable, but the cost of being wrong is a
+wedged request rather than a bad answer.
 
 **`runTool` never throws** (`agent-interfaces/tools/registry.ts:202`). A model cannot catch an
 exception, so every failure becomes data: `{ok: false, error}`.
@@ -141,6 +183,35 @@ into a user-facing failure after the user already got what they asked for.
   (`agent-interfaces/tools/checkout.ts:63`, `remainingAfterCharge`) — returns `0` rather than
   throwing, so a failed follow-up read cannot turn a completed order into a reported failure.
 
+**An order records what was approved, not what the cart says at payment time.**
+`buildCheckoutSnapshot` freezes the line items and their prices into `CheckoutSnapshot.lines`
+alongside the totals, and `confirmPayment` builds `order_items` from that — so mutating the cart
+or moving a catalog price while the Razorpay modal is open cannot produce an order whose items and
+totals disagree. A snapshot written before `lines` existed and still in flight falls back to the
+live cart and logs a WARN, so the old behaviour is visible rather than silent.
+
+On the agent path `place_order` additionally passes the quoted total and the quoted `mandateId`
+down, and `checkoutWithReservePay` / `prepareDebit` **refuse to charge** on either divergence
+rather than recording it and proceeding:
+- a total that no longer matches the signed quote answers `cart_changed` (retryable);
+- a Reserve Pay block that was revoked and recreated since the quote answers `quote_superseded`,
+  with a hint that explicitly warns off `start_reserve_pay_setup` — calling it would revoke the
+  block the customer just approved.
+Both refusals happen before `prepareDebit`, so nothing is reserved and nothing is charged.
+
+**Conversation creation is bounded.** `chatService.resolveConversation` accepts a client-supplied
+`conversationId` with `createIfMissing`, and also mints one when the client sends none — both are
+client-driven, so both check `MAX_CONVERSATIONS_PER_USER` first and answer
+`409 CONFLICT` rather than letting one account fill the `conversations` table.
+
+**Over-size request bodies** are refused before any handler sees them.
+`hono/body-limit` runs globally in `server.ts` at `MAX_REQUEST_BODY_BYTES` (256 KB), after the
+request logger — so an over-size request still produces one `http` log line — and answers
+`413 {error, code: "PAYLOAD_TOO_LARGE"}` in the same shape `onError` produces for a `DomainError`.
+It sits above the unauthenticated routes (`/api/auth/*`, `/oauth/register`, `/oauth/token`,
+`/webhooks/razorpay`), and the webhook's raw-body signature read (`c.req.text()`) still works
+underneath it.
+
 ## 7. Anti-probing
 
 Failures are shaped so a caller learns nothing from them.
@@ -148,7 +219,14 @@ Failures are shaped so a caller learns nothing from them.
 - Another user's order, address or conversation answers **404, not 403** — uniformly, across REST
   routes and agent tools alike. `resolveConversation` documents this explicitly.
 - `verifyCredentials` returns one `"Invalid email or password"` for both an unknown email and a
-  wrong password.
+  wrong password, and takes the **same time** either way: the miss path runs `Bun.password.verify`
+  against a dummy argon2 hash computed once at module load, so a returning-early miss no longer
+  answers in ~0ms while a hit pays for a full verify. Identical text with distinguishable timing
+  is still enumeration.
+  *Not yet closed on the signup side:* `createUser` still throws
+  `"An account with this email already exists"`, which leaks the same fact directly. It is left
+  alone deliberately — a non-enumerating signup and a non-enumerating forgot-password want the
+  same treatment, and the password-reset work is `issues.md` P2.
 - `GET /api/reserve-pay/approval/:token` returns one 404 for unknown, expired and abandoned links
   alike, so someone holding a guess cannot tell which.
 
@@ -173,6 +251,31 @@ Failures are shaped so a caller learns nothing from them.
   mismatch and a content flash.
 - **Admin failures funnel through one handler** (`store/admin-auth-store.ts`), where a 401 tears
   the session down and anything else is left retryable with the token kept.
+- **Shopper failures funnel the same way.** `handleAuthApiError` (`store/auth-store.ts`) is the
+  shopper-side twin: a 401 anywhere — the 7-day JWT lapsing mid-session — ends the session once,
+  raises a transient `sessionExpired` flag, and `AuthHydrator` turns that into a redirect to
+  `/login?next=<path>`. Everything else returns false and stays retryable.
+- **A post-capture failure is never reported as a failed payment.**
+  `app/(shop)/(protected)/checkout/page.tsx` — if `/checkout/verify` throws after Razorpay has
+  captured, the money is already gone and the `payment.captured` webhook creates the order
+  regardless. The page shows a "confirming your payment" state and polls `GET /api/orders` for an
+  order matching the Razorpay order id, then routes to the success page; after ~30s it falls back
+  to "your payment went through, we'll email you" with a link to `/orders`. Only
+  `PAYMENT_VERIFICATION_FAILED` — a genuinely bad signature — keeps the plain error path.
+- **Voice degrades to text at every step, never to a broken control.** `store/chat-store.ts` +
+  `routes/voice.ts`: a server with no `SARVAM_API_KEY` answers `503 VOICE_UNAVAILABLE`, which the
+  storefront treats as "hide the mic" rather than an error — text chat is untouched. A failed
+  transcription toasts once and leaves the draft empty; a failed synthesis is silent, because the
+  reply is already on screen and a toast per turn would be noise. Sarvam's own error bodies are
+  logged and never returned: they can quote the customer's speech back.
+- **A language that can be heard but not spoken falls back rather than failing.**
+  `services/voiceService.ts` — saaras transcribes 23 languages, bulbul synthesises fewer, so a
+  reply for a language with no voice is spoken in English and the response reports the language
+  actually used. Over-long replies are truncated at a sentence boundary instead of rejected.
+- **Cart writes survive out-of-order responses.** `store/cart-store.ts` stamps every mutation with
+  a monotonic sequence number and applies a response only while it is still the newest, so five
+  fast taps on `+` settle on the value that was issued last, not the one that responded last. A
+  failed write resyncs from the server rather than reverting to a stale snapshot.
 
 ## 9. Configuration and the simulator
 

@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ALL_TOOLS, runTool } from "../tools/registry";
+import { isOnSurface } from "../tools/types";
 import type { ToolContext, ToolResult } from "../tools/types";
 
 // Adapter over the same tool registry the chat agent uses. No logic of its own (Hard Rule #2) —
@@ -42,6 +43,18 @@ function toolResultToCallResult(result: ToolResult) {
   return {
     isError: true,
     content: [{ type: "text" as const, text }],
+    // The whole tool-error design exists so a caller can branch on the code —
+    // chat/partMapper.ts uses exactly that to ensure `payment_declined` never offers a retry,
+    // because the charge may have succeeded and only its proof is suspect. Flattening to text
+    // left an MCP client guessing, and MCP place_order is deliberately open, so a client
+    // guessing wrong retries into a double-charge attempt. The success path one branch up
+    // already sets structuredContent; this makes the failure path equally machine-readable.
+    structuredContent: {
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+      ...(error.hint ? { hint: error.hint } : {}),
+    },
   };
 }
 
@@ -51,13 +64,13 @@ export function buildMcpServer(ctx: ToolContext): McpServer {
     { instructions: AGENT_INSTRUCTIONS }
   );
 
-  for (const tool of ALL_TOOLS) {
+  for (const tool of ALL_TOOLS.filter((tool) => isOnSurface(tool, "mcp"))) {
     server.registerTool(
       tool.name,
       {
         description: tool.description,
         inputSchema: tool.input as z.ZodObject<z.ZodRawShape>,
-        annotations: { readOnlyHint: tool.readOnly },
+        annotations: { readOnlyHint: tool.readOnly, ...tool.annotations },
       },
       async (args: unknown) => toolResultToCallResult(await runTool(ctx, tool.name, args))
     );

@@ -6,6 +6,7 @@ import {
   integer,
   timestamp,
   check,
+  index,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./users";
@@ -37,6 +38,9 @@ export const orders = pgTable("orders", {
   status: text("status").notNull().default("placed"),
   placedAt: timestamp("placed_at").notNull().defaultNow(),
 }, (t) => [
+  // listOrders, getOrderById and the admin filters all select by user_id, and listOrders orders
+  // by placed_at within it — one composite index serves both halves.
+  index("orders_user_placed_idx").on(t.userId, t.placedAt.desc()),
   check(
     "orders_status_check",
     sql`${t.status} in (${sql.join(
@@ -46,14 +50,19 @@ export const orders = pgTable("orders", {
   ),
 ]);
 
-export const orderItems = pgTable("order_items", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  orderId: uuid("order_id")
-    .notNull()
-    .references(() => orders.id, { onDelete: "cascade" }),
-  productId: uuid("product_id")
-    .notNull()
-    .references(() => products.id, { onDelete: "restrict" }),
-  qty: integer("qty").notNull(),
-  priceAtPurchase: integer("price_at_purchase").notNull(),
-});
+export const orderItems = pgTable(
+  "order_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "restrict" }),
+    qty: integer("qty").notNull(),
+    priceAtPurchase: integer("price_at_purchase").notNull(),
+  },
+  // Every order hydration selects by order_id.
+  (t) => [index("order_items_order_idx").on(t.orderId)]
+);

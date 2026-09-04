@@ -1,14 +1,19 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { cartItems, carts, products } from "../db/schema";
-import { EmptyCartError, NotFoundError } from "../errors";
-import { getDeliveryFee } from "../constants";
+import {
+  EmptyCartError,
+  NotFoundError,
+  ProductUnavailableError,
+  ValidationError,
+} from "../errors";
+import { getDeliveryFee, MAX_CART_ITEM_QTY } from "../constants";
 
 // Cart is server-side, referenced by id (backend/CLAUDE.md "Cart Handling") — every function
 // here takes a cart_id, never client- or agent-submitted contents. One active cart per user;
 // getOrCreateActiveCartId is the only place that assumption lives.
 
-export async function getOrCreateActiveCartId(userId: string) {
+export async function getOrCreateActiveCartId(userId: string): Promise<string> {
   const [existing] = await db
     .select({ id: carts.id })
     .from(carts)
@@ -17,9 +22,28 @@ export async function getOrCreateActiveCartId(userId: string) {
 
   if (existing) return existing.id;
 
-  const [created] = await db.insert(carts).values({ userId }).returning({ id: carts.id });
-  if (!created) throw new Error("Failed to create cart");
-  return created.id;
+  // Insert-after-check, so two concurrent callers both reach here and carts.user_id is unique.
+  // onConflictDoNothing makes the loser return no row instead of throwing a raw unique violation
+  // that nothing catches — same shape chatService.resolveConversation uses. This is the hottest
+  // path in the backend and is newly reachable from parallel MCP tool calls, which have no
+  // client-side serialisation.
+  const [created] = await db
+    .insert(carts)
+    .values({ userId })
+    .onConflictDoNothing()
+    .returning({ id: carts.id });
+
+  if (created) return created.id;
+
+  // Lost the race; re-read the winner's row.
+  const [winner] = await db
+    .select({ id: carts.id })
+    .from(carts)
+    .where(eq(carts.userId, userId))
+    .limit(1);
+
+  if (!winner) throw new Error("Failed to create cart");
+  return winner.id;
 }
 
 async function assertItemBelongsToCart(cartId: string, itemId: string) {
@@ -35,12 +59,19 @@ async function assertItemBelongsToCart(cartId: string, itemId: string) {
 
 export async function addItem(cartId: string, productId: string, qty: number) {
   const [product] = await db
-    .select({ id: products.id })
+    .select({ id: products.id, name: products.name, inStock: products.inStock })
     .from(products)
     .where(and(eq(products.id, productId), isNull(products.archivedAt)))
     .limit(1);
 
   if (!product) throw new NotFoundError("Product");
+
+  // archivedAt hides a product that can never be sold again; inStock hides one that cannot be
+  // sold right now. Checking only the first let the storefront add and check out an out-of-stock
+  // product while the agent path correctly refused it.
+  if (!product.inStock) {
+    throw new ProductUnavailableError(`${product.name} is out of stock.`);
+  }
 
   const [existing] = await db
     .select()
@@ -48,10 +79,21 @@ export async function addItem(cartId: string, productId: string, qty: number) {
     .where(and(eq(cartItems.cartId, cartId), eq(cartItems.productId, productId)))
     .limit(1);
 
+  // Against the resulting line, not the increment: qty is additive, so a schema bound on the
+  // request alone lets repeated capped calls run a line past the cap and eventually past int4.
+  // Here rather than only in the route schema or only in the agent tool, so every caller of the
+  // service inherits it.
+  const resultingQty = (existing?.qty ?? 0) + qty;
+  if (resultingQty > MAX_CART_ITEM_QTY) {
+    throw new ValidationError(
+      `That would put ${product.name} at ${resultingQty}, over the limit of ${MAX_CART_ITEM_QTY} per item.`
+    );
+  }
+
   if (existing) {
     await db
       .update(cartItems)
-      .set({ qty: existing.qty + qty })
+      .set({ qty: resultingQty })
       .where(eq(cartItems.id, existing.id));
   } else {
     await db.insert(cartItems).values({ cartId, productId, qty });

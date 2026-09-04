@@ -5,6 +5,7 @@ import { ConflictError, NotFoundError } from "../errors";
 import * as auditService from "./auditService";
 import * as categoryService from "./categoryService";
 import { slugify } from "../utils/slug";
+import { splitPagedRows } from "../utils/paginate";
 import {
   pgErrorCode,
   PG_UNIQUE_VIOLATION,
@@ -80,32 +81,25 @@ export async function list(query: AdminProductQuery) {
 
   const orderBy =
     query.sort === "name-asc"
-      ? [asc(products.name)]
+      ? [asc(products.name), asc(products.id)]
       : query.sort === "price-asc"
-        ? [asc(products.price)]
+        ? [asc(products.price), asc(products.id)]
         : query.sort === "price-desc"
-          ? [desc(products.price)]
-          : [desc(products.archivedAt), desc(products.slug)]; // "newest" — no created_at column
+          ? [desc(products.price), asc(products.id)]
+          : [desc(products.createdAt), asc(products.id)]; // "newest"
 
-  const [items, countRows] = await Promise.all([
-    db
-      .select(adminProductSelect)
-      .from(products)
-      .innerJoin(categories, eq(products.categoryId, categories.id))
-      .where(whereClause)
-      .orderBy(...orderBy)
-      .limit(query.pageSize)
-      .offset((query.page - 1) * query.pageSize),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(products)
-      .innerJoin(categories, eq(products.categoryId, categories.id))
-      .where(whereClause),
-  ]);
+  // One query, not two — see splitPagedRows.
+  const rows = await db
+    .select({ ...adminProductSelect, totalCount: sql<number>`count(*) over()::int` })
+    .from(products)
+    .innerJoin(categories, eq(products.categoryId, categories.id))
+    .where(whereClause)
+    .orderBy(...orderBy)
+    .limit(query.pageSize)
+    .offset((query.page - 1) * query.pageSize);
 
   return {
-    items,
-    total: countRows[0]?.count ?? 0,
+    ...splitPagedRows(rows),
     page: query.page,
     pageSize: query.pageSize,
   };

@@ -1,7 +1,8 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { carts, orderItems, orders, products, type CheckoutSnapshot } from "../db/schema";
-import { EmptyCartError, NotFoundError } from "../errors";
+import { ConflictError, EmptyCartError, NotFoundError } from "../errors";
+import { logger } from "../logger";
 import * as addressService from "./addressService";
 import * as auditService from "./auditService";
 import * as cartService from "./cartService";
@@ -9,6 +10,7 @@ import * as paymentService from "./paymentService";
 import * as reservePayService from "./reservePayService";
 import type { InitiateCheckoutInput } from "../schemas/checkout.schema";
 import { pgErrorCode, PG_UNIQUE_VIOLATION } from "../utils/db-error";
+import { MAX_ORDER_PAGE_SIZE } from "../constants";
 
 function generateOrderNumber() {
   const timestamp = Date.now().toString(36).toUpperCase();
@@ -44,6 +46,15 @@ async function buildCheckoutSnapshot(
     },
     deliverySlot: input.deliverySlot,
     paymentMethod: paymentMethod ?? input.paymentMethod ?? "razorpay",
+    // The approved basket, frozen here alongside the totals it produced. confirmPayment builds
+    // the order's line items from this, not from the live cart — otherwise the two halves of an
+    // order disagree: totals from the snapshot, items and prices from whatever the cart and the
+    // catalog say by the time payment lands.
+    lines: cart.items.map((item) => ({
+      productId: item.product.id,
+      qty: item.qty,
+      price: item.product.price,
+    })),
     subtotal: cart.subtotal,
     deliveryFee: cart.deliveryFee,
     discount,
@@ -88,8 +99,26 @@ export async function initiateCheckout(userId: string, input: InitiateCheckoutIn
  * the order from if this process dies mid-charge. Stashing after the charge would leave one
  * unrecoverable window — money taken, no order, nothing to reconstruct from.
  */
-export async function checkoutWithReservePay(userId: string, input: InitiateCheckoutInput) {
+export async function checkoutWithReservePay(
+  userId: string,
+  input: InitiateCheckoutInput,
+  /**
+   * What a signed quote said this charge would be. Supplied by place_order; omitted by the direct
+   * REST route, which has no prior quote to honour. When present, both fields are enforced before
+   * any money moves — see below.
+   */
+  expected?: { total: number; mandateId: string }
+) {
   const { cartId, snapshot } = await buildCheckoutSnapshot(userId, input, "upi_reserve_pay");
+
+  // The snapshot is re-derived from the live cart here, so it can differ from the total the
+  // customer actually approved. Refuse rather than charge a figure nobody agreed to: place_order's
+  // fingerprint check narrows this window to sub-millisecond but explicitly does not close it.
+  if (expected && snapshot.total !== expected.total) {
+    throw new ConflictError(
+      `The cart changed after this quote was created — it now totals ₹${snapshot.total}, not ₹${expected.total}.`
+    );
+  }
 
   const prepared = await reservePayService.prepareDebit({
     userId,
@@ -97,6 +126,11 @@ export async function checkoutWithReservePay(userId: string, input: InitiateChec
     // Unique per attempt, not per cart: a retried checkout is a separate debit and needs its own
     // receipt to stay traceable in reconciliation.
     receipt: `cart_${cartId.slice(0, 8)}_${Date.now().toString(36)}`,
+    // Charge the block the quote named, not whichever one happens to be live now. A customer who
+    // revokes and recreates their block between prepare_order and place_order would otherwise be
+    // charged against a mandate the signed quote never mentioned, and the signature would still
+    // verify because nothing covers mandateId.
+    expectedMandateId: expected?.mandateId,
   });
 
   await stashPendingCheckout(cartId, prepared.razorpayOrderId, snapshot);
@@ -148,8 +182,25 @@ export async function confirmPayment(razorpayOrderId: string, razorpayPaymentId:
   }
 
   const snapshot = cart.checkoutSnapshot;
-  const cartWithTotals = await cartService.getCartWithTotals(cart.id);
-  if (cartWithTotals.items.length === 0) throw new EmptyCartError();
+
+  // Built from the frozen snapshot, so the order records what was approved. The live-cart read is
+  // only a fallback for a snapshot written before `lines` existed and still in flight; it is the
+  // old, wrong behaviour, so it says so in the log.
+  let orderLines = snapshot.lines;
+  if (!orderLines) {
+    logger.warn("checkout", "checkout snapshot has no lines — falling back to the live cart", {
+      cartId: cart.id,
+      razorpayOrderId,
+    });
+    const cartWithTotals = await cartService.getCartWithTotals(cart.id);
+    orderLines = cartWithTotals.items.map((item) => ({
+      productId: item.product.id,
+      qty: item.qty,
+      price: item.product.price,
+    }));
+  }
+
+  if (orderLines.length === 0) throw new EmptyCartError();
 
   let orderId: string;
   try {
@@ -174,11 +225,11 @@ export async function confirmPayment(razorpayOrderId: string, razorpayPaymentId:
       if (!order) throw new Error("Failed to create order");
 
       await tx.insert(orderItems).values(
-        cartWithTotals.items.map((item) => ({
+        orderLines.map((line) => ({
           orderId: order.id,
-          productId: item.product.id,
-          qty: item.qty,
-          priceAtPurchase: item.product.price,
+          productId: line.productId,
+          qty: line.qty,
+          priceAtPurchase: line.price,
         }))
       );
 
@@ -260,14 +311,19 @@ export async function cancelPendingCheckout(razorpayOrderId: string) {
   });
 }
 
-// Exported so adminOrderService returns the same order+items+product shape without duplicating
-// the join.
-export async function getOrderWithItems(orderId: string) {
-  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
-  if (!order) throw new NotFoundError("Order");
+type OrderRow = typeof orders.$inferSelect;
 
-  const items = await db
+/**
+ * Attaches items to a page of already-selected order rows in ONE query, rather than one query per
+ * order. Exported so adminOrderService hydrates the same way instead of looping getOrderWithItems
+ * — which re-selected the order it had just been handed, on top of its items.
+ */
+export async function attachItems<T extends OrderRow>(orderRows: T[]) {
+  if (orderRows.length === 0) return [];
+
+  const rows = await db
     .select({
+      orderId: orderItems.orderId,
       productId: orderItems.productId,
       qty: orderItems.qty,
       priceAtPurchase: orderItems.priceAtPurchase,
@@ -275,23 +331,81 @@ export async function getOrderWithItems(orderId: string) {
     })
     .from(orderItems)
     .innerJoin(products, eq(orderItems.productId, products.id))
-    .where(eq(orderItems.orderId, orderId));
+    .where(
+      inArray(
+        orderItems.orderId,
+        orderRows.map((order) => order.id)
+      )
+    );
 
-  return { ...order, items };
+  const byOrder = new Map<string, Omit<(typeof rows)[number], "orderId">[]>();
+  for (const { orderId, ...item } of rows) {
+    const bucket = byOrder.get(orderId);
+    if (bucket) bucket.push(item);
+    else byOrder.set(orderId, [item]);
+  }
+
+  return orderRows.map((order) => ({ ...order, items: byOrder.get(order.id) ?? [] }));
 }
 
-export async function listOrders(userId: string) {
+// Exported so adminOrderService returns the same order+items+product shape without duplicating
+// the join. Single-order path; use attachItems for a page.
+export async function getOrderWithItems(orderId: string) {
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order) throw new NotFoundError("Order");
+
+  const [hydrated] = await attachItems([order]);
+  if (!hydrated) throw new NotFoundError("Order");
+  return hydrated;
+}
+
+/**
+ * A page of the customer's orders, newest first, with items — two queries total.
+ *
+ * It was previously 1 + 2N: the order rows, then every one mapped through getOrderWithItems,
+ * which re-selected the order plus its items. Twenty orders was 41 round trips over an unindexed
+ * user_id, with no limit or offset anywhere.
+ */
+export async function listOrders(
+  userId: string,
+  options: { limit?: number; offset?: number } = {}
+) {
   const rows = await db
-    .select()
+    .select({ order: orders, totalCount: sql<number>`count(*) over()::int` })
     .from(orders)
     .where(eq(orders.userId, userId))
-    .orderBy(desc(orders.placedAt));
+    // asc(id) so equal placedAt values cannot make a page repeat or skip an order.
+    .orderBy(desc(orders.placedAt), desc(orders.id))
+    .limit(options.limit ?? MAX_ORDER_PAGE_SIZE)
+    .offset(options.offset ?? 0);
 
-  return Promise.all(rows.map((row) => getOrderWithItems(row.id)));
+  return {
+    items: await attachItems(rows.map((row) => row.order)),
+    total: rows[0]?.totalCount ?? 0,
+  };
 }
 
 export async function getOrderById(userId: string, orderId: string) {
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
   if (!order || order.userId !== userId) throw new NotFoundError("Order");
   return getOrderWithItems(orderId);
+}
+
+/**
+ * Resolve a customer-facing order number ("FC-…") within one user's own orders. Here rather than
+ * in the tool that wanted it: /agent-interfaces never touches the database (Service Layer Rule),
+ * and orders.ts was reaching for `db` directly to do this.
+ *
+ * Scoped to the caller in the query itself, so an order number belonging to someone else is
+ * indistinguishable from one that does not exist — the same anti-probing shape getOrderById uses.
+ */
+export async function getOrderByNumber(userId: string, orderNumber: string) {
+  const [order] = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.orderNumber, orderNumber), eq(orders.userId, userId)))
+    .limit(1);
+
+  if (!order) throw new NotFoundError("Order");
+  return getOrderWithItems(order.id);
 }

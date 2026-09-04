@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCartStore } from "@/store/cart-store";
-import { useAuthStore } from "@/store/auth-store";
+import { useAuthStore, handleAuthApiError } from "@/store/auth-store";
 import type { OrderItem } from "@/lib/types";
 
 export function ReorderButton({ items }: { items: OrderItem[] }) {
@@ -30,8 +30,10 @@ export function ReorderButton({ items }: { items: OrderItem[] }) {
             items.map((item) => addItem(item.productId, item.qty))
           );
           toast.success("Items added to cart");
-        } catch {
-          toast.error("Couldn't add items to cart");
+        } catch (err) {
+          if (!handleAuthApiError(err)) {
+            toast.error("Couldn't add items to cart");
+          }
         }
       }}
     >

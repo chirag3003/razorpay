@@ -1,14 +1,16 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq } from "drizzle-orm";
 import { logger } from "../logger";
 import type { ChatMessages } from "@openrouter/sdk/models";
 import { db } from "../db";
 import { chatMessages, conversations } from "../db/schema";
-import { NotFoundError } from "../errors";
+import { ConflictError, NotFoundError } from "../errors";
 import { runTool, toOpenAITools } from "../agent-interfaces/tools/registry";
+import { isOnSurface } from "../agent-interfaces/tools/types";
 import type { ToolContext, ToolResult } from "../agent-interfaces/tools/types";
 import { runAgentTurn } from "../llm/agentLoop";
 import { buildSystemPrompt } from "../llm/systemPrompt";
 import { buildTurnContext } from "../llm/turnContext";
+import { MAX_CONVERSATIONS_PER_USER } from "../constants";
 import * as mandateService from "./mandateService";
 import { isCollapsible, nextPartId, toolResultToPart } from "../chat/partMapper";
 import { deriveTitle, turnToUserText } from "../chat/turnInput";
@@ -39,12 +41,31 @@ const MAX_HISTORY_MESSAGES = 40;
  * An id belonging to somebody else reads as missing rather than forbidden, matching the tool
  * registry's anti-probing choice for UNAUTHORIZED/FORBIDDEN.
  */
+/**
+ * Both creation paths below are client-driven — one mints an id, the other honours the id the
+ * client sent — so a client can otherwise create conversations without bound. Cheap to check: the
+ * conversations(user_id, updated_at) index already covers it.
+ */
+async function assertConversationQuota(userId: string) {
+  const [row] = await db
+    .select({ total: count() })
+    .from(conversations)
+    .where(eq(conversations.userId, userId));
+
+  if ((row?.total ?? 0) >= MAX_CONVERSATIONS_PER_USER) {
+    throw new ConflictError(
+      `This account has reached the limit of ${MAX_CONVERSATIONS_PER_USER} conversations. Continue an existing one.`
+    );
+  }
+}
+
 export async function resolveConversation(
   userId: string,
   conversationId?: string,
   options: { createIfMissing?: boolean } = {}
 ) {
   if (!conversationId) {
+    await assertConversationQuota(userId);
     const [created] = await db.insert(conversations).values({ userId }).returning();
     if (!created) throw new Error("Failed to create conversation");
     return created;
@@ -63,6 +84,8 @@ export async function resolveConversation(
 
   if (!options.createIfMissing) throw new NotFoundError("Conversation");
 
+  await assertConversationQuota(userId);
+
   const [created] = await db
     .insert(conversations)
     .values({ id: conversationId, userId })
@@ -74,16 +97,115 @@ export async function resolveConversation(
   return resolveConversation(userId, conversationId);
 }
 
+/**
+ * Where a replayable window may begin.
+ *
+ * Cutting purely by row count breaks the transcript: each tool round writes an `assistant` row
+ * carrying `tool_calls` plus one `tool` row per result, and a `tool` message whose matching
+ * `assistant` was cut is rejected with a 400 by every OpenAI-compatible endpoint. That failure is
+ * NOT transient — history only grows, so once a conversation crosses the boundary unluckily,
+ * every subsequent turn in it fails identically ("The assistant hit a problem. Try again?").
+ *
+ * A `user` row, or an `assistant` row that called no tools, is always a safe first message.
+ */
+function isSafeHistoryStart(message: ChatMessages): boolean {
+  if (message.role === "user") return true;
+  if (message.role !== "assistant") return false;
+
+  // The OpenRouter SDK's shape is camelCase `toolCalls`; `tool_calls` is checked too because
+  // these rows are raw JSONB replayed verbatim, so a row written by another producer (or an
+  // older build) could carry the wire spelling instead.
+  const raw = message as { toolCalls?: unknown; tool_calls?: unknown };
+  const toolCalls = raw.toolCalls ?? raw.tool_calls;
+  return !Array.isArray(toolCalls) || toolCalls.length === 0;
+}
+
 async function loadHistory(conversationId: string): Promise<ChatMessages[]> {
+  // Ordered by `seq`, never by createdAt: persistTurn writes a whole turn in one transaction and
+  // defaultNow() is transaction-start time, so every row of a turn shares a timestamp and
+  // ordering by it returns them in arbitrary order. See the seq column's comment.
+  //
+  // Newest-first with a LIMIT, then reversed — the whole transcript was previously read on every
+  // turn, each row holding a full OpenRouter message with tool results as JSONB, just to keep the
+  // last MAX_HISTORY_MESSAGES. Cost grew with conversation length, unboundedly.
+  //
+  // Over-fetch, because the window has to be trimmed forward to a turn boundary below and the
+  // trimming only ever discards rows.
   const rows = await db
     .select()
     .from(chatMessages)
     .where(eq(chatMessages.conversationId, conversationId))
-    .orderBy(asc(chatMessages.createdAt));
+    .orderBy(desc(chatMessages.seq))
+    .limit(MAX_HISTORY_MESSAGES * 2);
 
   // Raw OpenRouter messages, replayed verbatim — reconstructing them from rendered widgets is
   // lossy and is how a chat agent starts contradicting itself.
-  return rows.slice(-MAX_HISTORY_MESSAGES).map((row) => row.content as unknown as ChatMessages);
+  const messages = rows
+    .reverse()
+    .slice(-MAX_HISTORY_MESSAGES)
+    .map((row) => row.content as unknown as ChatMessages);
+
+  // Walk forward to the first row that can legally start a request.
+  const start = messages.findIndex(isSafeHistoryStart);
+  if (start === -1) {
+    // The whole window is one long tool round with no safe entry point. Sending none of it is
+    // correct: the turn loses context but succeeds, where sending a fragment is a guaranteed 400.
+    logger.warn("chat", "no safe history boundary in window — dropping history for this turn", {
+      conversationId,
+      windowSize: messages.length,
+    });
+    return [];
+  }
+
+  return dropOrphanedToolMessages(messages.slice(start), conversationId);
+}
+
+/**
+ * Last line of defence: drop any `tool` message whose matching `assistant` tool call is not the
+ * one immediately open.
+ *
+ * The boundary walk above only fixes where the window *begins*; it cannot repair a window whose
+ * rows are interleaved. That used to happen whenever history was ordered by `createdAt` (see the
+ * seq column), and the consequence was not a clean rejection — the provider accepted the request
+ * and then **never responded**, so the turn hung with no error, no log, and no timeout.
+ *
+ * Ordering by `seq` is the actual fix and this should now never fire. It stays because the cost
+ * of being wrong here is a wedged request rather than a bad answer, and a WARN plus a slightly
+ * lossy turn is a much better failure than silence.
+ */
+function dropOrphanedToolMessages(
+  messages: ChatMessages[],
+  conversationId: string
+): ChatMessages[] {
+  let openCallIds = new Set<string>();
+  const kept: ChatMessages[] = [];
+  let dropped = 0;
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      const raw = message as { toolCalls?: { id?: string }[]; tool_calls?: { id?: string }[] };
+      const calls = raw.toolCalls ?? raw.tool_calls ?? [];
+      openCallIds = new Set(calls.map((call) => call.id).filter((id): id is string => !!id));
+    } else if (message.role === "tool") {
+      const raw = message as { toolCallId?: string; tool_call_id?: string };
+      const id = raw.toolCallId ?? raw.tool_call_id;
+      if (!id || !openCallIds.has(id)) {
+        dropped++;
+        continue;
+      }
+    }
+    kept.push(message);
+  }
+
+  if (dropped > 0) {
+    logger.warn("chat", "dropped orphaned tool messages from history", {
+      conversationId,
+      dropped,
+      note: "ordering is wrong — should not happen now that seq exists",
+    });
+  }
+
+  return kept;
 }
 
 /** The rendered transcript, for a `{kind:"resume"}` turn. */
@@ -94,7 +216,7 @@ export async function loadTranscript(userId: string, conversationId: string) {
     .select()
     .from(chatMessages)
     .where(eq(chatMessages.conversationId, conversationId))
-    .orderBy(asc(chatMessages.createdAt));
+    .orderBy(asc(chatMessages.seq));
 
   return rows.filter((row) => row.parts && row.parts.length > 0);
 }
@@ -258,7 +380,12 @@ export async function* runChatTurn(input: {
   }
 
   // place_order is never in this list — see handlePlaceOrderConfirm.
-  const tools = toOpenAITools((tool) => tool.name !== "place_order");
+  // Two independent filters. place_order is a SAFETY gate — it is never in the model's hands, so
+  // no prompt injection can reach it. isOnSurface is a relevance one: search_products_nl is
+  // MCP-only, since this agent is already an LLM and can build the filters itself.
+  const tools = toOpenAITools(
+    (tool) => tool.name !== "place_order" && isOnSurface(tool, "chat")
+  );
 
   const [history, context] = await Promise.all([
     loadHistory(conversation.id),

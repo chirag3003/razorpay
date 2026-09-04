@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { QuantityStepper } from "@/components/product/quantity-stepper";
 import { useCartStore } from "@/store/cart-store";
-import { useAuthStore } from "@/store/auth-store";
+import { useAuthStore, handleAuthApiError } from "@/store/auth-store";
 import { cn } from "@/lib/utils";
 
 export function AddToCartButton({
@@ -64,8 +64,10 @@ export function AddToCartButton({
           try {
             await addItem(productId);
             toast.success(`${productName} added to cart`);
-          } catch {
-            toast.error("Couldn't add item to cart");
+          } catch (err) {
+            if (!handleAuthApiError(err)) {
+              toast.error("Couldn't add item to cart");
+            }
           } finally {
             setPending(false);
           }
@@ -84,8 +86,8 @@ export function AddToCartButton({
         setPending(true);
         try {
           await addItem(productId);
-        } catch {
-          toast.error("Couldn't update cart");
+        } catch (err) {
+          if (!handleAuthApiError(err)) toast.error("Couldn't update cart");
         } finally {
           setPending(false);
         }
@@ -95,8 +97,8 @@ export function AddToCartButton({
         setPending(true);
         try {
           await updateQty(line.itemId, qty - 1);
-        } catch {
-          toast.error("Couldn't update cart");
+        } catch (err) {
+          if (!handleAuthApiError(err)) toast.error("Couldn't update cart");
         } finally {
           setPending(false);
         }

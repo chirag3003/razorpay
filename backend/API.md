@@ -253,10 +253,13 @@ GET    /api/reserve-pay/mandates         auth     all mandates, newest first
 GET    /api/reserve-pay/mandates/current auth     the live mandate, or null
 GET    /api/reserve-pay/mandates/:id     auth     re-syncs from Razorpay; poll this
 POST   /api/reserve-pay/mandates/:id/revoke  auth stops further debits (local only)
-POST   /api/reserve-pay/mandates/debit   auth     test harness: debit without an order
+POST   /api/reserve-pay/mandates/debit   auth     test harness; only when RESERVE_PAY_TEST_DEBIT_ROUTE=true
 
 POST   /api/chat                         auth     SSE; the storefront chat agent
 GET    /api/chat/:conversationId         auth     rendered transcript, no model call
+
+POST   /api/voice/transcribe             auth     multipart audio -> English text + spoken language
+POST   /api/voice/speak                  auth     English text + language -> base64 WAV
 
 POST   /api/mcp                          agent    MCP tool server (see §6.14) — Bearer is an OAuth
                                                    access token, never a copy-pasted human JWT
@@ -402,8 +405,14 @@ popup sit in between them:
 **Step 1 — `POST /api/cart/checkout/initiate`**
 Body:
 ```json
-{ "addressId": "<uuid, must belong to caller>", "deliverySlot": "Today, 4-6 PM" }
+{ "addressId": "<uuid, must belong to caller>", "deliverySlot": "Today, 4:00 PM - 6:00 PM" }
 ```
+`deliverySlot` is the human **label**, not a slot id, and it must be one the store actually
+offers — one of the six `${day}, ${time}` strings built from `DELIVERY_SLOTS` in
+`backend/src/constants.ts` (`"Today, 2:00 PM - 4:00 PM"` … `"Tomorrow, 2:00 PM - 4:00 PM"`).
+Anything else is a `400`. The agent tools take the slot **id** instead; `list_delivery_slots`
+returns both.
+
 `paymentMethod` is **optional** and defaults to `"razorpay"`. The storefront no longer collects a
 payment method up front — Razorpay Checkout asks the user which method to use. If a caller does
 send one it must be `"upi" | "card" | "netbanking" | "cod"`, and **it is stored for display only;
@@ -479,7 +488,10 @@ just call `/checkout/initiate` again — it creates a fresh Razorpay order from 
 ### 6.9 Orders
 Both require auth and are scoped to the caller.
 
-- `GET /api/orders` → `200 { "orders": Order[] }`, newest first.
+- `GET /api/orders` → `200 { "orders": Order[], "total": number }`, newest first.
+  Optional `?limit=` (1–100, default 100) and `?offset=` (default 0) paginate; `total` is the
+  unpaginated count, so a client can page without a second call. Sending neither returns the
+  first 100, which is what the storefront does today.
 - `GET /api/orders/:id` → `200 { "order": Order }`. `404` if it doesn't exist **or** belongs to
   someone else (same non-distinguishing behavior as addresses).
 
@@ -704,8 +716,14 @@ Charges the caller's live mandate **without creating an order**. This is a test 
 exercising the rail without a cart; real purchases go through the checkout endpoint below, which
 produces an order row for the money it moves. Returns `201` with the debit and Razorpay ids.
 
+**Not registered by default.** It moves real money for any authenticated caller and creates
+nothing to reconcile against, so it exists as a route only when `RESERVE_PAY_TEST_DEBIT_ROUTE=true`
+— the same "not registered at all in a real deployment" treatment the `/sim/*` controls get.
+Without the flag it answers `404` (or `401` first, if the caller has no token — `reservePayRoutes`
+guards `*` before matching). Boot logs a warning if it is enabled against live keys.
+
 **`POST /api/cart/checkout/reserve-pay`** — the headless counterpart to §6.8. Body is identical
-to `/checkout/initiate`: `{ "addressId": "<uuid>", "deliverySlot": "Today, 4-6 PM" }`. Returns
+to `/checkout/initiate`: `{ "addressId": "<uuid>", "deliverySlot": "Today, 4:00 PM - 6:00 PM" }`. Returns
 `201 { order }` — the **same** `Order` shape §6.8 returns. No `keyId`, no Checkout.js, no
 signature round-trip; one call in, a finished order out.
 
@@ -978,6 +996,59 @@ deleted, and the storefront re-reads its cart when a `cart_summary` part arrives
 remember when changing a part type: `CHAT_PROTOCOL_VERSION` (now **4**) guards the *request*, not
 parts already persisted in `chat_messages.parts` or the client's `sessionStorage` — see
 `backend/issues.md`.
+
+---
+
+### 6.13a Chat voice — `POST /api/voice/transcribe` and `POST /api/voice/speak`
+
+Speech in and speech out for the chat panel, backed by Sarvam AI. Both routes require the normal
+human session JWT. They are **independent of `/api/chat`** — the storefront transcribes, sends the
+resulting text as an ordinary chat turn, and then asks for the reply to be spoken. Nothing in the
+chat protocol knows a turn was spoken, and `CHAT_PROTOCOL_VERSION` does not cover these routes.
+
+**Availability.** Both answer `503 VOICE_UNAVAILABLE` when the server has no `SARVAM_API_KEY`.
+Treat that as "hide the mic", not as an error worth a toast — text chat is unaffected. Every other
+failure is `502 VOICE_SERVICE_ERROR`, meaning Sarvam refused or was unreachable; the caller should
+fall back to text rather than retrying in a loop.
+
+#### `POST /api/voice/transcribe`
+
+`multipart/form-data` with one field, `file`. WAV, MP3, AAC, OGG, OPUS, FLAC, MP4/M4A and WebM are
+all accepted, so a browser `MediaRecorder` blob can be posted as-is with **no transcoding**.
+
+- **Keep clips under 30 seconds.** This is the synchronous transcription path; longer audio needs
+  Sarvam's batch API, which is not exposed here.
+- Bodies over 4 MB are rejected with `413 PAYLOAD_TOO_LARGE`. That is far above 30s of any
+  supported codec — it is an abuse bound, not a working limit.
+- `400 VALIDATION` if the body has no `file` field, or if the clip contained no detectable speech.
+
+```json
+{ "transcript": "add two litres of milk to my cart", "languageCode": "hi-IN" }
+```
+
+**`transcript` is always English**, whichever of the 23 supported languages was spoken — the
+transcription runs in translate mode so the English-only chat agent can act on it. `languageCode`
+is BCP-47 for what was *actually* spoken, and is the value to pass back to `/speak`. It falls back
+to `en-IN` when detection is inconclusive.
+
+#### `POST /api/voice/speak`
+
+```json
+{ "text": "I've added two litres of milk.", "languageCode": "hi-IN" }
+```
+
+`text` is the assistant's reply **in English**; `languageCode` defaults to `en-IN`. When it is
+anything else, the text is translated before synthesis.
+
+```json
+{ "audio": "<base64 WAV>", "languageCode": "hi-IN" }
+```
+
+`audio` is base64 — decode it to bytes before playing (`atob` → `Uint8Array` → `Blob` of type
+`audio/wav`). **Check `languageCode` in the response, not the one you sent:** more languages can be
+transcribed than can be spoken, so a request for a language with no voice comes back synthesised in
+`en-IN` rather than failing. Over-long text is truncated at a sentence boundary rather than
+rejected.
 
 ---
 

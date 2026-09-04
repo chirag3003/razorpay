@@ -5,6 +5,7 @@ import {
   jsonb,
   timestamp,
   index,
+  bigserial,
   check,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -55,9 +56,20 @@ export const chatMessages = pgTable(
     content: jsonb("content").$type<Record<string, unknown>>().notNull(),
     parts: jsonb("parts").$type<MessagePart[]>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
+    /**
+     * Total insertion order, and the ONLY column safe to order a transcript by.
+     *
+     * `createdAt` cannot do it: `defaultNow()` emits Postgres `now()`, which is *transaction
+     * start* time, and persistTurn writes a whole turn in one transaction — so every row of a
+     * turn carries an identical timestamp. Ordering by it alone returns a turn's rows in
+     * arbitrary order, which interleaves `tool` rows away from the `assistant` row that called
+     * them. That is not cosmetic: a `tool` message whose matching `assistant` does not precede
+     * it makes the provider hang, with no error and no log.
+     */
+    seq: bigserial("seq", { mode: "number" }).notNull(),
   },
   (t) => [
-    index("chat_messages_conversation_idx").on(t.conversationId, t.createdAt),
+    index("chat_messages_conversation_idx").on(t.conversationId, t.seq),
     check(
       "chat_messages_role_check",
       sql`${t.role} in (${sql.join(

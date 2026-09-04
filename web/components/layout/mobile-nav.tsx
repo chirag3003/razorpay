@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import * as Icons from "lucide-react";
-import { Menu, Heart, PackageCheck, UserCircle, LogIn } from "lucide-react";
+import { Menu, PackageCheck, UserCircle, LogIn } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -51,9 +51,6 @@ export function MobileNav() {
             </MobileLink>
             <MobileLink href="/orders" onClick={() => setOpen(false)} icon={PackageCheck}>
               Orders
-            </MobileLink>
-            <MobileLink href="/wishlist" onClick={() => setOpen(false)} icon={Heart}>
-              Wishlist
             </MobileLink>
             <MobileLink href="/login" onClick={() => setOpen(false)} icon={LogIn}>
               Login / Sign up

@@ -54,13 +54,20 @@ reservePayRoutes.post("/mandates/:id/revoke", async (c) => {
 // Test harness: charges the caller's own mandate with no order, to exercise the rail end to end
 // without the cart path. Real purchases go through POST /api/cart/checkout/reserve-pay, which
 // creates an order row for the money it moves.
-reservePayRoutes.post("/mandates/debit", zValidator("json", debitMandateSchema), async (c) => {
-  const input = c.req.valid("json");
-  const result = await reservePayService.debitFromMandate({
-    userId: c.get("userId"),
-    amountInRupees: input.amountInRupees,
-    receipt: `rp_test_${Date.now()}`,
-    description: input.description ?? "Reserve Pay test debit",
+//
+// Registered only when RESERVE_PAY_TEST_DEBIT_ROUTE is on, rather than registered and then
+// guarded — same reasoning as the /sim block above. This one moves *real* money against real
+// keys and any authenticated user can call it, so it should not exist as a route at all in a
+// real deployment.
+if (env.RESERVE_PAY_TEST_DEBIT_ROUTE) {
+  reservePayRoutes.post("/mandates/debit", zValidator("json", debitMandateSchema), async (c) => {
+    const input = c.req.valid("json");
+    const result = await reservePayService.debitFromMandate({
+      userId: c.get("userId"),
+      amountInRupees: input.amountInRupees,
+      receipt: `rp_test_${Date.now()}`,
+      description: input.description ?? "Reserve Pay test debit",
+    });
+    return c.json(result, 201);
   });
-  return c.json(result, 201);
-});
+}

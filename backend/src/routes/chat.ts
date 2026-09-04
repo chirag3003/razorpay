@@ -55,7 +55,10 @@ chatRoutes.post("/", zValidator("json", chatRequestSchema), async (c) => {
     const send = (event: ServerEvent) => stream.writeSSE({ data: JSON.stringify(event) });
 
     try {
-      // The abort propagates to the OpenRouter request, so a closed panel stops costing tokens.
+      // A closed panel stops being served promptly: the loop checks this signal between stream
+      // chunks. It is NOT handed to the OpenRouter SDK — that SDK never settles its promise when
+      // its abort signal fires, so passing it turns every abandoned request into a wedged turn.
+      // See withTimeout in llm/agentLoop.ts.
       for await (const event of chatService.runChatTurn({
         userId,
         request,

@@ -2,6 +2,12 @@
 
 export const CURRENCY = "INR";
 
+// Ceiling on any request body. Unauthenticated routes (/api/auth/*, /oauth/register, /oauth/token,
+// /webhooks/razorpay) otherwise accept an arbitrarily large body — a cheap memory/CPU lever.
+// Generous on purpose: the largest legitimate bodies are a chat turn's clientState and an MCP
+// tool call, both well under 100 KB.
+export const MAX_REQUEST_BODY_BYTES = 256 * 1024;
+
 // Storefront pricing (in rupees, matching how products.price/mrp are stored).
 export const FREE_DELIVERY_THRESHOLD = 199;
 export const DELIVERY_FEE = 25;
@@ -31,9 +37,10 @@ export type OrderStatus = (typeof ORDER_STATUSES)[number];
 // Mirrors web/components/checkout/delivery-slot-picker.tsx exactly, because orders.delivery_slot
 // stores the human LABEL and an agent-placed order must be indistinguishable from a web one.
 //
-// The REST checkout schema stays `z.string().min(1)` — the storefront posts a label, so an enum
-// of ids would break it. The constraint applies at the agent tool boundary instead, where free
-// text would otherwise let an LLM write "asap" into an order a human has to fulfil.
+// Both boundaries are constrained, by different keys: the agent tools take a slot *id* (an enum in
+// agent-tool.schema.ts), while the REST checkout schema takes the *label* the storefront posts and
+// validates it with isDeliverySlotLabel below. Neither accepts free text — an order a human has to
+// fulfil should never carry "asap".
 export const DELIVERY_SLOTS = [
   { id: "today-2-4", day: "Today", time: "2:00 PM - 4:00 PM" },
   { id: "today-4-6", day: "Today", time: "4:00 PM - 6:00 PM" },
@@ -56,9 +63,43 @@ export function deliverySlotLabel(slotId: string): string | undefined {
   return slot ? `${slot.day}, ${slot.time}` : undefined;
 }
 
-// Per-line cart ceiling. cartService.addItem has no quantity validation of its own and qty is
-// additive, so an LLM looping add_to_cart could otherwise run a line to any number.
+/** Every label deliverySlotLabel can produce — the vocabulary the REST checkout accepts. */
+export const DELIVERY_SLOT_LABELS = DELIVERY_SLOTS.map(
+  (slot) => `${slot.day}, ${slot.time}`
+) as readonly string[];
+
+export function isDeliverySlotLabel(value: string): boolean {
+  return DELIVERY_SLOT_LABELS.includes(value);
+}
+
+// Per-line cart ceiling. qty is additive, so this is checked against the RESULTING line quantity
+// in cartService.addItem, not just against a single request in cart.schema.ts — otherwise a
+// caller looping add_to_cart runs a line to any number, and eventually past int4.
 export const MAX_CART_ITEM_QTY = 20;
+
+// Ceiling on conversations one account may hold. resolveConversation honours a client-supplied
+// conversationId with createIfMissing, so without this a client can mint unlimited rows. Far above
+// any real usage — this is an abuse bound, not a product limit.
+export const MAX_CONVERSATIONS_PER_USER = 200;
+
+// Default and ceiling for one page of a customer's own order history. listOrders previously had
+// no limit at all; the storefront reads the whole list in one call, so this is set high enough
+// not to truncate any realistic history while still bounding the query.
+export const MAX_ORDER_PAGE_SIZE = 100;
+
+// How many saved addresses buildTurnContext inlines into the block prepended to EVERY chat turn.
+// Fine at two; at forty the address list is the largest thing in the prompt and pushes
+// conversation history out of the window — degrading exactly the thing the context block exists
+// to improve. Past this the model is told to call list_addresses, mirroring how cart line items
+// are already handled in the same file.
+export const MAX_CONTEXT_ADDRESSES = 5;
+
+// Ceiling on one LLM round. Without it a request that the provider accepts but never answers
+// wedges the turn forever: the SSE stream stays open, the client sees message_start and nothing
+// else, and nothing is logged because the round log only runs after the stream completes. A
+// malformed message array (an orphaned `tool` message) does exactly that — observed hanging past
+// two minutes. Generous against real rounds, which measure 2-4s.
+export const LLM_ROUND_TIMEOUT_MS = 60_000;
 
 // The signed order quote from prepare_order. Short-lived: it freezes a price, and the longer it
 // lives the more likely the cart behind it has moved.
@@ -117,6 +158,16 @@ export function suggestReserveAmounts(cartTotal: number): number[] {
 // maximum leaves no headroom for clock skew against Razorpay.
 export const RESERVE_PAY_DEFAULT_EXPIRY_DAYS = 30;
 
+// How long a syncMandate result stays fresh enough to reuse. Each sync costs up to two Razorpay
+// round trips (fetchPayment + fetchCustomerToken) and syncMandate is called from createMandate,
+// getMandate, prepare_order, get_payment_status, check_reserve_pay_status, prepareDebit and four
+// webhook branches — one checkout conversation could hit Razorpay six or more times.
+//
+// This weakens nothing. The correctness guarantee is prepareDebit's conditional UPDATE, which
+// re-checks the balance atomically in the database regardless of how fresh the sync was. Callers
+// that genuinely need a live read (polling, webhooks) pass `force`.
+export const RESERVE_PAY_SYNC_FRESHNESS_SECONDS = 15;
+
 // How long an unapproved mandate holds the one-live-per-user slot. Past this age createMandate
 // expires the stale row and proceeds, so closing the UPI app mid-approval isn't a permanent lock.
 export const RESERVE_PAY_PENDING_TTL_MINUTES = 15;
@@ -151,3 +202,56 @@ export const LIVE_MANDATE_STATUSES = ["pending", "confirmed", "paused"] as const
 export const RESERVE_PAY_DEBIT_STATUSES = ["created", "captured", "failed"] as const;
 
 export type ReservePayDebitStatus = (typeof RESERVE_PAY_DEBIT_STATUSES)[number];
+
+// --- Voice (Sarvam AI) --------------------------------------------------------------------
+
+// Ceiling on a voice upload. Well above 30s of any codec Sarvam accepts (30s of WebM/Opus is
+// ~120 KB; of AAC at 128 kbps, ~480 KB) while still bounding what one request can cost us.
+// Voice is mounted ahead of the global MAX_REQUEST_BODY_BYTES limit in server.ts precisely
+// because audio does not fit under 256 KB — see the comment there.
+export const MAX_VOICE_UPLOAD_BYTES = 4 * 1024 * 1024;
+
+// The REST speech-to-text endpoint is documented for clips under 30 seconds; longer needs the
+// batch API, which is out of scope. The recorder stops itself at this length, so the ceiling is
+// enforced on both sides.
+export const MAX_VOICE_CLIP_SECONDS = 30;
+
+// bulbul caps a single synthesis request. Over-long replies are truncated at a sentence boundary
+// rather than rejected — a slightly short spoken answer beats silence.
+export const MAX_TTS_INPUT_CHARS = 1500;
+
+// saaras:v3 transcribes all 23 scheduled languages; `mode: "translate"` hands us English back
+// regardless of what was spoken, which is what lets the English-only agent answer at all.
+export const SARVAM_STT_MODEL = "saaras:v3";
+export const SARVAM_TRANSLATE_MODEL = "mayura:v1";
+export const SARVAM_TTS_MODEL = "bulbul:v3";
+// Must be one of bulbul:v3's own voices — the v2 speaker names (anushka, manisha, …) are
+// rejected with a 400, and v2 itself is deprecated, so there is no pairing that accepts them.
+// Verified against the live API; the full v3 list is returned in that 400's message.
+export const SARVAM_TTS_SPEAKER = "shreya";
+
+export const DEFAULT_VOICE_LANGUAGE = "en-IN";
+
+// Languages bulbul can actually *speak*. Deliberately narrower than the set saaras can
+// transcribe: a customer may speak Santali and be understood, but there is no voice to answer
+// them in, and asking for one returns a 400 from Sarvam. voiceService falls back to English
+// rather than failing the turn — see speak().
+export const SARVAM_TTS_LANGUAGES = [
+  "en-IN",
+  "hi-IN",
+  "bn-IN",
+  "gu-IN",
+  "kn-IN",
+  "ml-IN",
+  "mr-IN",
+  "od-IN",
+  "pa-IN",
+  "ta-IN",
+  "te-IN",
+] as const;
+
+export type VoiceLanguage = (typeof SARVAM_TTS_LANGUAGES)[number];
+
+export function isSpeakableLanguage(code: string): code is VoiceLanguage {
+  return (SARVAM_TTS_LANGUAGES as readonly string[]).includes(code);
+}

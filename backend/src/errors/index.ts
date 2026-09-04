@@ -26,6 +26,23 @@ export class ForbiddenError extends DomainError {
   }
 }
 
+// A request that is well-formed enough to parse but breaks a rule the schema cannot express —
+// a cart line pushed over MAX_CART_ITEM_QTY by an *additive* add, for instance, where no single
+// request is invalid on its own. registry.mapError turns this into `invalid_input`.
+export class ValidationError extends DomainError {
+  constructor(message: string) {
+    super(message, 400, "VALIDATION");
+  }
+}
+
+// The product exists and is sellable in principle, but not right now. Distinct from NotFoundError
+// so the caller can offer an alternative rather than claim the product doesn't exist.
+export class ProductUnavailableError extends DomainError {
+  constructor(message: string) {
+    super(message, 409, "PRODUCT_UNAVAILABLE");
+  }
+}
+
 export class EmptyCartError extends DomainError {
   constructor() {
     super("Cart is empty", 400, "EMPTY_CART");
@@ -80,5 +97,23 @@ export class MandateAmountExceededError extends DomainError {
 export class InsufficientBalanceError extends DomainError {
   constructor(message = "Insufficient blocked balance on the Reserve Pay mandate") {
     super(message, 402, "INSUFFICIENT_BLOCKED_BALANCE");
+  }
+}
+
+// --- Voice (Sarvam AI) --------------------------------------------------------------------
+
+// Sarvam refused or was unreachable. 502 for the same reason PaymentGatewayError is: the request
+// was fine, the upstream let us down. The caller's recovery is to fall back to text.
+export class VoiceServiceError extends DomainError {
+  constructor(message = "Voice service request failed") {
+    super(message, 502, "VOICE_SERVICE_ERROR");
+  }
+}
+
+// SARVAM_API_KEY is unset, so voice was never configured on this deployment. 503 rather than 502:
+// nothing is broken and retrying will not help — the storefront should hide the mic entirely.
+export class VoiceUnavailableError extends DomainError {
+  constructor(message = "Voice is not configured on this server") {
+    super(message, 503, "VOICE_UNAVAILABLE");
   }
 }

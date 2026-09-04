@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, jsonb, timestamp, check } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, jsonb, timestamp, check, index } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./users";
 
@@ -61,15 +61,20 @@ export const oauthCodes = pgTable("oauth_codes", {
 
 // Long-lived bearer secrets, hashed at rest. Rotated on every use — refreshAccessToken issues a
 // new row and revokes this one, so a stolen refresh token is replayable exactly once.
-export const oauthRefreshTokens = pgTable("oauth_refresh_tokens", {
-  tokenHash: text("token_hash").primaryKey(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  clientId: text("client_id")
-    .notNull()
-    .references(() => oauthClients.id, { onDelete: "cascade" }),
-  expiresAt: timestamp("expires_at").notNull(),
-  revokedAt: timestamp("revoked_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+export const oauthRefreshTokens = pgTable(
+  "oauth_refresh_tokens",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => oauthClients.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at").notNull(),
+    revokedAt: timestamp("revoked_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  // Revocation and the "this user's tokens for this client" lookups both filter on the pair.
+  (t) => [index("oauth_refresh_tokens_user_client_idx").on(t.userId, t.clientId)]
+);

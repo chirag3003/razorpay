@@ -4,7 +4,9 @@ import Link from "next/link";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { QuantityStepper } from "@/components/product/quantity-stepper";
+import { toast } from "sonner";
 import { useCartStore } from "@/store/cart-store";
+import { handleAuthApiError } from "@/store/auth-store";
 import { formatPrice } from "@/lib/utils";
 import type { CartProduct } from "@/lib/types";
 
@@ -22,6 +24,14 @@ export function CartLineItem({
   const updateQty = useCartStore((state) => state.updateQty);
   const removeItem = useCartStore((state) => state.removeItem);
   const addItem = useCartStore((state) => state.addItem);
+
+  // These were fire-and-forget, so a failure surfaced as an unhandled rejection
+  // and the row silently stopped responding.
+  function run(mutate: () => Promise<void>, message: string) {
+    void mutate().catch((err) => {
+      if (!handleAuthApiError(err)) toast.error(message);
+    });
+  }
 
   return (
     <div className="flex items-center gap-3">
@@ -52,15 +62,21 @@ export function CartLineItem({
             variant="ghost"
             size="icon-sm"
             aria-label="Remove item"
-            onClick={() => removeItem(itemId)}
+            onClick={() =>
+              run(() => removeItem(itemId), "Couldn't remove item")
+            }
           >
             <X className="size-3.5" />
           </Button>
         )}
         <QuantityStepper
           qty={qty}
-          onIncrement={() => addItem(product.id)}
-          onDecrement={() => updateQty(itemId, qty - 1)}
+          onIncrement={() =>
+            run(() => addItem(product.id), "Couldn't update cart")
+          }
+          onDecrement={() =>
+            run(() => updateQty(itemId, qty - 1), "Couldn't update cart")
+          }
         />
       </div>
     </div>

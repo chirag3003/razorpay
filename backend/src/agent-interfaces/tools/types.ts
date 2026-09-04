@@ -52,6 +52,11 @@ export type ToolResult<T = unknown> =
   | { ok: true; data: T }
   | { ok: false; error: ToolError };
 
+/** The two callers that wrap the registry: the first-party chat agent, and the MCP server. */
+export type ToolSurface = "chat" | "mcp";
+
+export const ALL_SURFACES: readonly ToolSurface[] = ["chat", "mcp"];
+
 export type ToolDefinition<S extends z.ZodType = z.ZodType> = {
   name: string;
   /** Written for a model, not a developer — see the descriptions in catalog.ts / cart.ts. */
@@ -62,8 +67,35 @@ export type ToolDefinition<S extends z.ZodType = z.ZodType> = {
    * read/write split declared in one place rather than inferred from tool names.
    */
   readOnly: boolean;
+  /**
+   * Which surfaces offer this tool. Omitted means both.
+   *
+   * Deliberately separate from chatService's `place_order` filter, which carries an unrelated
+   * safety meaning (that tool is never in the chat model's hands at all). This one answers "is
+   * this tool useful here", not "is it safe here".
+   */
+  surfaces?: readonly ToolSurface[];
+  /**
+   * MCP tool annotations, verbatim. Per-tool and hand-written rather than derived from
+   * `readOnly`, because the interesting ones cannot be derived: add_to_cart and update_cart_item
+   * are both writes, but one is additive (a blind retry double-adds) and the other is absolute.
+   *
+   * Clients use these to decide what to run without asking a human, which matters more here than
+   * usual — MCP's place_order is deliberately open (see backend/CLAUDE.md "Where the human is in
+   * the loop"), so a client guessing wrong retries into a double-charge attempt.
+   */
+  annotations?: {
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
   handler: (ctx: ToolContext, input: z.output<S>) => Promise<unknown>;
 };
+
+/** Whether a tool is offered on a given surface. Absent `surfaces` means every surface. */
+export function isOnSurface(tool: ToolDefinition<z.ZodType>, surface: ToolSurface) {
+  return (tool.surfaces ?? ALL_SURFACES).includes(surface);
+}
 
 /** Narrowing helper so `defineTool` keeps the input type through the registry map. */
 export function defineTool<S extends z.ZodType>(def: ToolDefinition<S>): ToolDefinition<S> {

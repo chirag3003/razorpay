@@ -21,7 +21,7 @@ import { ReorderButton } from "@/components/order/reorder-button";
 import { EmptyState } from "@/components/common/empty-state";
 import { ErrorState } from "@/components/common/error-state";
 import { getOrderById } from "@/lib/api/orders";
-import { useAuthStore } from "@/store/auth-store";
+import { useAuthStore, handleAuthApiError } from "@/store/auth-store";
 import { formatPrice } from "@/lib/utils";
 import { ApiError } from "@/lib/api/client";
 import type { Order } from "@/lib/types";
@@ -51,6 +51,7 @@ export default function OrderDetailPage() {
       })
       .catch((err) => {
         if (ignore) return;
+        if (handleAuthApiError(err)) return;
         if (err instanceof ApiError && err.code === "NOT_FOUND") {
           setNotFound(true);
         } else {

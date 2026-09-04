@@ -15,6 +15,7 @@ import { categories, products } from "../db/schema";
 import { NotFoundError } from "../errors";
 import { buildProductSearchCondition } from "./productSearch";
 import type { ProductQuery } from "../schemas/product-query.schema";
+import { splitPagedRows } from "../utils/paginate";
 
 // Returned shape mirrors the frontend's Product type (categorySlug, not a raw categoryId FK).
 const productWithCategory = {
@@ -62,39 +63,38 @@ export async function listProducts(filters: ProductQuery) {
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
+  // Every sort ends with products.id. Without a tiebreaker, rows with equal keys come back in
+  // planner order, which is not stable across pages — so paginated results could repeat or skip
+  // products entirely. That is the backend half of web/issues.md's pagination bug.
   const orderBy =
     filters.sort === "price-asc"
-      ? [asc(products.price)]
+      ? [asc(products.price), asc(products.id)]
       : filters.sort === "price-desc"
-        ? [desc(products.price)]
+        ? [desc(products.price), asc(products.id)]
         : filters.sort === "rating"
-          ? [desc(products.rating)]
+          ? [desc(products.rating), asc(products.id)]
           : filters.sort === "newest"
-            ? [sql`CASE WHEN ${products.tags} @> ARRAY['new']::text[] THEN 0 ELSE 1 END`]
-            : [desc(products.ratingCount)];
+            ? // Actually by age now. This used to order by whether the product carried the `new`
+              // *tag*, because products had no created_at column.
+              [desc(products.createdAt), asc(products.id)]
+            : [desc(products.ratingCount), asc(products.id)];
 
+  // count(*) over() rather than a second query repeating the same join and where clause purely
+  // for the total — one round trip, and both halves computed over the same snapshot.
   const baseQuery = db
-    .select(productWithCategory)
+    .select({ ...productWithCategory, totalCount: sql<number>`count(*) over()::int` })
     .from(products)
     .innerJoin(categories, eq(products.categoryId, categories.id));
 
   const filtered = whereClause ? baseQuery.where(whereClause) : baseQuery;
 
-  const [items, countRows] = await Promise.all([
-    filtered
-      .orderBy(...orderBy)
-      .limit(filters.pageSize)
-      .offset((filters.page - 1) * filters.pageSize),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(products)
-      .innerJoin(categories, eq(products.categoryId, categories.id))
-      .where(whereClause),
-  ]);
+  const rows = await filtered
+    .orderBy(...orderBy)
+    .limit(filters.pageSize)
+    .offset((filters.page - 1) * filters.pageSize);
 
   return {
-    items,
-    total: countRows[0]?.count ?? 0,
+    ...splitPagedRows(rows),
     page: filters.page,
     pageSize: filters.pageSize,
   };

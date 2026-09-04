@@ -11,7 +11,7 @@ import { ErrorState } from "@/components/common/error-state";
 import { OrderStatusBadge } from "@/components/order/order-status-badge";
 import { ReorderButton } from "@/components/order/reorder-button";
 import { getOrders } from "@/lib/api/orders";
-import { useAuthStore } from "@/store/auth-store";
+import { useAuthStore, handleAuthApiError } from "@/store/auth-store";
 import { formatPrice } from "@/lib/utils";
 import type { Order } from "@/lib/types";
 
@@ -35,8 +35,10 @@ export default function OrdersPage() {
       .then((data) => {
         if (!ignore) setOrders(data);
       })
-      .catch(() => {
-        if (!ignore) setFailed(true);
+      .catch((err) => {
+        if (ignore) return;
+        if (handleAuthApiError(err)) return;
+        setFailed(true);
       })
       .finally(() => {
         if (!ignore) setLoading(false);

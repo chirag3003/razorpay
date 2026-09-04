@@ -117,8 +117,17 @@ export async function apiFetch<T>(
     );
   }
 
+  // FormData carries its own encoding: it must be sent untouched, and setting Content-Type
+  // ourselves would omit the multipart boundary the browser generates. Used by the voice upload
+  // in lib/api/voice.ts — the alternative was a bare fetch in a component, which AGENTS.md
+  // rules out.
+  const isFormData =
+    typeof FormData !== "undefined" && opts.body instanceof FormData;
+
   const headers: Record<string, string> = {};
-  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+  if (opts.body !== undefined && !isFormData) {
+    headers["Content-Type"] = "application/json";
+  }
   if (opts.token) headers["Authorization"] = `Bearer ${opts.token}`;
 
   let res: Response;
@@ -128,7 +137,11 @@ export async function apiFetch<T>(
       {
         method: opts.method ?? "GET",
         headers,
-        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        body: isFormData
+          ? (opts.body as FormData)
+          : opts.body !== undefined
+            ? JSON.stringify(opts.body)
+            : undefined,
       }
     );
   } catch {

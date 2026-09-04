@@ -12,7 +12,10 @@ import { ProductSort } from "@/components/product/product-sort";
 import { ProductPagination } from "@/components/product/product-pagination";
 import { MobileFilters } from "@/components/product/mobile-filters";
 import { getCategories, getProducts } from "@/lib/api/catalog";
-import { toArray, toNumber, toSingle, toURLSearchParams } from "@/lib/search-params";
+import {
+  toArray, toNumber, toSingle, toURLSearchParams,
+  redirectIfPageOutOfRange,
+} from "@/lib/search-params";
 import type { RawSearchParams } from "@/lib/search-params";
 import type { SortOption } from "@/lib/types";
 
@@ -50,7 +53,7 @@ export default async function ProductsPage({
   ]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const currentPage = Math.min(page, totalPages);
+  redirectIfPageOutOfRange("/products", raw, page, totalPages);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -91,7 +94,7 @@ export default async function ProductsPage({
             <ProductPagination
               pathname="/products"
               searchParams={toURLSearchParams(raw)}
-              page={currentPage}
+              page={page}
               totalPages={totalPages}
             />
           </div>

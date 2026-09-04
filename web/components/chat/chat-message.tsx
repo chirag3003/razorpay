@@ -1,6 +1,7 @@
 "use client";
 
 import { Bubble, BubbleContent, BubbleGroup } from "@/components/ui/bubble";
+import { MarkdownMessage } from "@/components/chat/markdown-message";
 import { WidgetPart } from "@/components/chat/widget-registry";
 import type { ChatMessage as ChatMessageType } from "@/lib/chat/protocol";
 
@@ -31,7 +32,11 @@ export function ChatMessageView({ message }: { message: ChatMessageType }) {
               variant={isUser ? "default" : "tinted"}
               align={isUser ? "end" : "start"}
             >
-              <BubbleContent>{part.text}</BubbleContent>
+              <BubbleContent>
+                {/* Only the assistant's prose is markdown. A customer who types *not sure*
+                    means asterisks, and a voice transcript is literal by definition. */}
+                {isUser ? part.text : <MarkdownMessage text={part.text} />}
+              </BubbleContent>
             </Bubble>
           );
         }

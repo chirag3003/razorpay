@@ -43,6 +43,16 @@ export const envSchema = z.object({
     .default("true")
     .transform((v) => v === "true" || v === "1"),
   RESERVE_PAY_SIM_WEBHOOK_DELAY_MS: z.coerce.number().int().min(0).default(500),
+
+  // Registers POST /api/reserve-pay/mandates/debit, a test harness that charges the caller's own
+  // Reserve Pay block for an arbitrary amount and creates no order. Off by default: it moves real
+  // money against real keys and any authenticated user can call it. Same "registered only when
+  // enabled" treatment as the /sim/* controls, and the same "true"/"1" shape — z.coerce.boolean()
+  // is wrong here, it reads "false" as true.
+  RESERVE_PAY_TEST_DEBIT_ROUTE: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
   CORS_ORIGIN: z.string().default("http://localhost:3000"),
   // ADMIN_PASSWORD is the shared operator secret exchanged at POST /api/admin/login.
   // ADMIN_JWT_SECRET is distinct from JWT_SECRET, so a leaked user-token secret cannot mint an
@@ -60,6 +70,12 @@ export const envSchema = z.object({
   OPENROUTER_FALLBACK_MODEL: z.string().default("openai/gpt-4.1-mini"),
   // OpenRouter attribution headers, and the base for storefront hrefs in chat widgets.
   PUBLIC_APP_URL: z.url().default("http://localhost:3000"),
+
+  // Sarvam AI powers chat voice input/output (speech-to-text, translate, text-to-speech).
+  // Optional on purpose: unset simply disables the mic, and /api/voice/* answers 503 with
+  // VOICE_UNAVAILABLE. Text chat is unaffected either way — voice is an enhancement, not a
+  // dependency, so a missing key must not stop the backend booting.
+  SARVAM_API_KEY: z.string().optional(),
 
   // This backend's own externally-reachable origin, used to build the absolute URLs in the RFC
   // 8414/9728 metadata documents. Local dev against a remote MCP client needs a tunnel (ngrok),

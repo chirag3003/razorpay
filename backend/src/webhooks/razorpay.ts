@@ -46,7 +46,7 @@ async function handlePaymentCaptured(payment: WebhookPayment) {
   switch (source.kind) {
     case "mandate":
       // The customer approved the block. syncMandate picks up the token and the blocked amount.
-      await reservePayService.syncMandate(source.mandate.id);
+      await reservePayService.syncMandate(source.mandate.id, { force: true });
       return;
 
     case "debit":
@@ -100,7 +100,7 @@ async function handlePaymentFailed(payment: WebhookPayment) {
   switch (source.kind) {
     case "mandate":
       // syncMandate reads the reason off the payment itself rather than the webhook payload.
-      await reservePayService.syncMandate(source.mandate.id);
+      await reservePayService.syncMandate(source.mandate.id, { force: true });
       return;
 
     case "debit":
@@ -152,7 +152,7 @@ razorpayWebhook.post("/", async (c) => {
       case "token.cancelled":
       case "token.paused": {
         const mandate = await resolveMandateForTokenEvent(token, payment);
-        if (mandate) await reservePayService.syncMandate(mandate.id);
+        if (mandate) await reservePayService.syncMandate(mandate.id, { force: true });
         break;
       }
 

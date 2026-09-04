@@ -50,15 +50,18 @@ const getCart = defineTool({
 
 const addToCart = defineTool({
   name: "add_to_cart",
+  // Additive by design, so a blind retry after a timeout adds the quantity twice.
+  annotations: { idempotentHint: false, destructiveHint: false },
   description:
     "Add a product to the cart. Quantity is ADDITIVE — calling twice with qty 1 leaves 2 in the " +
     "cart, so to set an exact quantity use update_cart_item instead. Returns the updated cart.",
   input: addToCartSchema,
   readOnly: false,
   handler: async (ctx, input) => {
-    // Also confirms the product is real and sellable: cartService.addItem only checks it isn't
-    // archived — the REST route's Zod schema did the inStock and quantity checks, and agents
-    // don't pass through it.
+    // cartService.addItem enforces both the stock check and the per-line cap for every caller.
+    // These two checks are deliberately duplicated here, ahead of it, purely for the wording: a
+    // ToolFailure carries a model-facing `hint` naming the product and the headroom left, which a
+    // mapped DomainError cannot. The service is the guarantee; this is the better error message.
     const product = input.productId
       ? await productService.getProductById(input.productId)
       : await productService.getProductBySlug(input.slug!);
@@ -100,6 +103,8 @@ const addToCart = defineTool({
 
 const updateCartItem = defineTool({
   name: "update_cart_item",
+  // Absolute quantity — running it twice leaves the same line quantity.
+  annotations: { idempotentHint: true, destructiveHint: false },
   description:
     "Set a cart line to an exact quantity. Takes the line's itemId from get_cart, not a product " +
     "id. To take a line out of the cart, use remove_from_cart.",
@@ -122,6 +127,8 @@ const updateCartItem = defineTool({
 
 const removeFromCart = defineTool({
   name: "remove_from_cart",
+  // Removing an already-removed line is a not_found, not a second removal.
+  annotations: { idempotentHint: true, destructiveHint: true },
   description: "Remove one line from the cart entirely. Takes the itemId from get_cart.",
   input: removeFromCartSchema,
   readOnly: false,
@@ -136,6 +143,9 @@ const removeFromCart = defineTool({
 
 const clearCart = defineTool({
   name: "clear_cart",
+  // Irreversible and there is no undo — the tool description says so, and a client that reads
+  // annotations rather than prose should learn the same thing.
+  annotations: { destructiveHint: true, idempotentHint: true },
   description:
     "Empty the cart. Only do this when the customer explicitly asks — it is not reversible and " +
     "there is no undo.",

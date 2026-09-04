@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef } from "react";
-import { RotateCcw, Sparkles } from "lucide-react";
+import { RotateCcw, Sparkles, Volume2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { ChatComposer } from "@/components/chat/chat-composer";
@@ -18,6 +18,8 @@ export function ChatPanel() {
   const closeChat = useChatStore((s) => s.closeChat);
   const resetConversation = useChatStore((s) => s.resetConversation);
   const hasMessages = useChatStore((s) => s.messages.length > 0);
+  const speaking = useChatStore((s) => s.voicePhase === "speaking");
+  const stopSpeaking = useChatStore((s) => s.stopSpeaking);
   const isAuthed = useAuthStore((s) => s.status === "authenticated");
 
   const isDesktop = useMediaQuery("(min-width: 640px)");
@@ -73,6 +75,18 @@ export function ChatPanel() {
             <Sparkles className="size-4 text-primary" />
           </div>
           <SheetTitle className="flex-1">FreshCart Assistant</SheetTitle>
+          {/* Only route to silence a spoken reply short of closing the panel. */}
+          {speaking && (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Stop speaking"
+              onClick={stopSpeaking}
+            >
+              <Volume2 className="size-4 animate-pulse text-primary" />
+            </Button>
+          )}
           {hasMessages && (
             <Button
               type="button"
