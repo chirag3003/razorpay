@@ -87,6 +87,8 @@ const listAddresses = defineTool({
 
 const createAddress = defineTool({
   name: "create_address",
+  // Two calls create two addresses.
+  annotations: { idempotentHint: false, destructiveHint: false },
   description:
     "Save a new delivery address. Ask the customer for every field — never invent an address, " +
     "and never guess a pincode from a city name.",
@@ -238,6 +240,9 @@ const offerReservePayAmounts = defineTool({
 
 const startReservePaySetup = defineTool({
   name: "start_reserve_pay_setup",
+  // With replaceExisting it REVOKES the customer's current block — its remaining balance is
+  // released, not carried over. Destructive in the sense clients care about.
+  annotations: { idempotentHint: false, destructiveHint: true },
   description:
     "Begin setting up a reserved UPI balance. Returns a UPI deep link the customer must open and " +
     "approve with their PIN — this is the one step in the whole flow that needs a human. After " +
@@ -335,6 +340,9 @@ const checkReservePayStatus = defineTool({
 
 const prepareOrder = defineTool({
   name: "prepare_order",
+  // Takes no money, but it supersedes any previous open quote, so calling it twice does not
+  // leave the world as one call did.
+  annotations: { idempotentHint: false, destructiveHint: false },
   description:
     "Build an order quote for the customer to approve. Returns the exact lines, totals, address " +
     "and slot, plus a quoteId. Show this to the customer and get an explicit yes before calling " +
@@ -440,6 +448,10 @@ const prepareOrder = defineTool({
 
 const placeOrder = defineTool({
   name: "place_order",
+  // Genuinely idempotent, by quoteId: a second call returns the same order rather than placing
+  // another. Advertising it is what tells a client a retry after a timeout is safe — which is
+  // the difference between a recovered order and a double-charge attempt.
+  annotations: { idempotentHint: true, destructiveHint: false },
   description:
     "Charge the customer's reserved balance and place the order for a quote from prepare_order. " +
     "Only call this after the customer has explicitly confirmed. Safe to retry: calling it twice " +

@@ -37,6 +37,18 @@ function isEventStream(
   return typeof value === "object" && value !== null && Symbol.asyncIterator in value;
 }
 
+/** Token counts for one round. Null when the provider omits usage from the stream. */
+type RoundUsage = { prompt: number; completion: number; total: number };
+
+type RoundResult = {
+  text: string;
+  toolCalls: PendingToolCall[];
+  /** The model that actually answered, which is not necessarily modelChain[0]. */
+  model: string | null;
+  usage: RoundUsage | null;
+  ms: number;
+};
+
 /**
  * Reassembles one streamed completion. Tool-call fragments arrive across chunks keyed by `index`,
  * not by id — the id and name land in the first fragment, the JSON arguments after. Accumulating
@@ -46,7 +58,8 @@ async function* streamOnce(
   messages: ChatMessages[],
   tools: ChatFunctionTool[],
   signal: AbortSignal | undefined
-): AsyncGenerator<LoopEvent, { text: string; toolCalls: PendingToolCall[]; model: string | null }> {
+): AsyncGenerator<LoopEvent, RoundResult> {
+  const startedAt = Date.now();
   const response = await openrouter.chat.send(
     {
       chatRequest: {
@@ -77,6 +90,9 @@ async function* streamOnce(
   let text = "";
   let textOpen = false;
   let model: string | null = null;
+  // Arrives on the final chunk of a stream. The only per-turn cost signal available, and it was
+  // read nowhere — so there was no record of what a conversation cost or how long it took.
+  let usage: RoundUsage | null = null;
   const byIndex = new Map<number, PendingToolCall>();
 
   for await (const chunk of response) {
@@ -89,6 +105,14 @@ async function* streamOnce(
     // The model that actually answered, not just modelChain[0] — this is what makes a silent
     // server-side fallover to the secondary model visible instead of assumed.
     if (chunk.model) model = chunk.model;
+
+    if (chunk.usage) {
+      usage = {
+        prompt: chunk.usage.promptTokens ?? 0,
+        completion: chunk.usage.completionTokens ?? 0,
+        total: chunk.usage.totalTokens ?? 0,
+      };
+    }
 
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) continue;
@@ -121,6 +145,8 @@ async function* streamOnce(
       .map(([, call]) => call)
       .filter((call) => call.name !== ""),
     model,
+    usage,
+    ms: Date.now() - startedAt,
   };
 }
 
@@ -141,7 +167,7 @@ export async function* runAgentTurn(input: {
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const stream = streamOnce(messages, input.tools, input.signal);
 
-      let result: { text: string; toolCalls: PendingToolCall[]; model: string | null };
+      let result: RoundResult;
       while (true) {
         const next = await stream.next();
         if (next.done) {
@@ -153,12 +179,19 @@ export async function* runAgentTurn(input: {
 
       if (input.signal?.aborted) return;
 
+      // model + usage + latency: the only cost and performance visibility in the system. Both
+      // response.model and token usage are on every response and were previously read nowhere, so
+      // a degraded answer could not be attributed to a model and a turn had no cost record.
       logger.info("llm", `round ${round + 1}`, {
         model: result.model ?? modelChain[0],
         // A model in modelChain[0]'s place but not equal to it means OpenRouter's server-side
         // failover fired — the one thing a per-round log line needs to make visible.
         fallback: result.model !== null && result.model !== modelChain[0] ? true : undefined,
         toolCalls: result.toolCalls.length,
+        ms: result.ms,
+        promptTokens: result.usage?.prompt,
+        completionTokens: result.usage?.completion,
+        totalTokens: result.usage?.total,
       });
 
       const assistant: ChatMessages = {

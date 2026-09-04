@@ -75,6 +75,20 @@ export type ToolDefinition<S extends z.ZodType = z.ZodType> = {
    * this tool useful here", not "is it safe here".
    */
   surfaces?: readonly ToolSurface[];
+  /**
+   * MCP tool annotations, verbatim. Per-tool and hand-written rather than derived from
+   * `readOnly`, because the interesting ones cannot be derived: add_to_cart and update_cart_item
+   * are both writes, but one is additive (a blind retry double-adds) and the other is absolute.
+   *
+   * Clients use these to decide what to run without asking a human, which matters more here than
+   * usual — MCP's place_order is deliberately open (see backend/CLAUDE.md "Where the human is in
+   * the loop"), so a client guessing wrong retries into a double-charge attempt.
+   */
+  annotations?: {
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
   handler: (ctx: ToolContext, input: z.output<S>) => Promise<unknown>;
 };
 

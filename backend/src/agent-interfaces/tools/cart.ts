@@ -50,6 +50,8 @@ const getCart = defineTool({
 
 const addToCart = defineTool({
   name: "add_to_cart",
+  // Additive by design, so a blind retry after a timeout adds the quantity twice.
+  annotations: { idempotentHint: false, destructiveHint: false },
   description:
     "Add a product to the cart. Quantity is ADDITIVE — calling twice with qty 1 leaves 2 in the " +
     "cart, so to set an exact quantity use update_cart_item instead. Returns the updated cart.",
@@ -101,6 +103,8 @@ const addToCart = defineTool({
 
 const updateCartItem = defineTool({
   name: "update_cart_item",
+  // Absolute quantity — running it twice leaves the same line quantity.
+  annotations: { idempotentHint: true, destructiveHint: false },
   description:
     "Set a cart line to an exact quantity. Takes the line's itemId from get_cart, not a product " +
     "id. To take a line out of the cart, use remove_from_cart.",
@@ -123,6 +127,8 @@ const updateCartItem = defineTool({
 
 const removeFromCart = defineTool({
   name: "remove_from_cart",
+  // Removing an already-removed line is a not_found, not a second removal.
+  annotations: { idempotentHint: true, destructiveHint: true },
   description: "Remove one line from the cart entirely. Takes the itemId from get_cart.",
   input: removeFromCartSchema,
   readOnly: false,
@@ -137,6 +143,9 @@ const removeFromCart = defineTool({
 
 const clearCart = defineTool({
   name: "clear_cart",
+  // Irreversible and there is no undo — the tool description says so, and a client that reads
+  // annotations rather than prose should learn the same thing.
+  annotations: { destructiveHint: true, idempotentHint: true },
   description:
     "Empty the cart. Only do this when the customer explicitly asks — it is not reversible and " +
     "there is no undo.",
