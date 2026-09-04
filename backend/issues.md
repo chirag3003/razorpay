@@ -4,8 +4,10 @@ This is the **single** backend work register. It replaces `proposal.md` (the 202
 whose still-open items are folded in below with their original `S#`/`L#`/`A#` ids so existing
 references still resolve; the full original text is in git history.
 
-Ordering is by priority, not by file. Everything here has been verified against `main` at
-`dbcaabc`.
+Ordering is by priority, not by file. The P0/P1/Recommended sweep was completed against `main` at
+`dbcaabc`; what remains open is **P0 item 7 (rate limiting)**, **P2 (password reset)**, and the
+backlog. Closed items are kept as one-line rows with where they landed, rather than deleted, so
+the `S#`/`L#`/`A#` ids still resolve.
 
 For what already fails *gracefully*, see `handled.md` at the repo root — check it before adding a
 new error path, and add to it when you add one.
@@ -67,10 +69,11 @@ was removed or edited to build it.
 > first-party chat agent, where `place_order` is never in the model's tool list at all
 > (`chatService.ts:261`). Accepted knowingly: agentic checkout is the product.
 
-This closes `S1`. Two consequences of the decision are scheduled below rather than dropped:
-an MCP client needs the structured error (`S16`) and honest tool annotations (`A8`) to decide
-whether a retry is safe, and both matter more now than they did when `place_order` was
-chat-only.
+This closes `S1`. The two consequences of the decision that were scheduled rather than dropped are
+now done: an MCP client gets the structured error (`S16`) and honest tool annotations (`A8`) it
+needs to decide whether a retry is safe — `place_order` advertises `idempotentHint: true`, which
+is precisely what tells a client that retrying after a timeout returns the same order rather than
+placing a second one.
 
 ### Still open: `chat_messages.parts` carries no version stamp
 
@@ -94,85 +97,10 @@ current types.
 
 ## P0 — abuse surface and money correctness
 
-### 1. `minPrice` / `maxPrice` are unbounded on a public endpoint  `[new]`
+**All closed except item 7 (rate limiting), which was deferred by decision.** Everything below the
+rate-limiting entry has been fixed and verified; see git history for the per-item commits.
 
-`schemas/product-query.schema.ts` — `z.coerce.number().optional()`, with no `.int()`, `.max()` or
-`.nonnegative()`. `GET /api/products?maxPrice=99999999999999999999` reaches
-`productService.listProducts` → `lte(products.price, …)` → a Postgres *integer out of range*
-error, which is not a `DomainError` and so becomes a generic 500. **Unauthenticated, repeatable,
-on the most public endpoint in the app.**
-
-The fix already exists one file over: `schemas/agent-tool.schema.ts` caps the same filters at
-`MAX_PRODUCT_PRICE` (`constants.ts`), added for exactly this reason. It was applied to the agent
-path only. Mirror it here.
-
-### 2. Cart quantity is uncapped on the REST path  `[new]`
-
-`schemas/cart.schema.ts` — `addCartItemSchema.qty` is `z.number().int().positive()` and
-`updateCartItemSchema.qty` is `z.number().int().min(0)`. Neither has a `.max()`.
-`cartService.addItem` has no cap of its own and quantity is **additive**, so
-`POST /api/cart/items {qty: 2000000000}` twice overflows `int4` and produces another unhandled
-500. A single large value also produces an order total with no ceiling on the ordinary Razorpay
-checkout path.
-
-`MAX_CART_ITEM_QTY` (20) is enforced **only** at `agent-interfaces/tools/cart.ts:79`.
-
-**Also fix the comment at `agent-interfaces/tools/cart.ts:60`**, which asserts that "the REST
-route's Zod schema did the inStock and quantity checks." It does neither. A comment claiming a
-guard that does not exist is worse than no comment.
-
-Cap in the schema *and* in `cartService.addItem`, since the additive path can exceed the cap
-without any single request doing so.
-
-### 3. REST add-to-cart ignores `inStock`  `[new]`
-
-`cartService.addItem` checks `archivedAt` only. Out-of-stock products can be added and checked out
-through the storefront, while the agent path correctly rejects them
-(`agent-interfaces/tools/cart.ts:66`). Same asymmetry as item 2 — the guard belongs in the
-service, where both callers get it.
-
-### 4. `deliverySlot` accepts arbitrary free text  `[new]`
-
-`schemas/checkout.schema.ts` — `z.string().min(1)`. Any string, of any length, lands in an order a
-human has to fulfil. `constants.ts` acknowledges this ("The REST checkout schema stays
-`z.string().min(1)`") and constrains it at the agent boundary instead; the storefront posts a
-label, so validate against the labels `deliverySlotLabel` produces from `DELIVERY_SLOTS` rather
-than against slot ids.
-
-### 5. Order items come from the live cart while totals come from the snapshot  `[new]` + `S14` + `S15`
-
-Three faces of one problem: **what was approved is not what gets charged or recorded.**
-
-- **Web path** (`orderService.confirmPayment:129`): totals are read from the frozen
-  `checkoutSnapshot`, but the order's line items are read from the *live* cart
-  (`getCartWithTotals`, `:151`) and `priceAtPurchase` from the *current* catalog price (`:181`).
-  Mutating the cart while the Razorpay modal is open produces an order containing the new items at
-  the old total. The agent path has a `cartFingerprint` guard for this; the web path has none.
-- **`S14`** — `place_order` computes `totalMatchesQuote` (`tools/checkout.ts:522`), writes it to
-  the audit row, and nothing reads it. `checkoutWithReservePay` re-derives its snapshot from the
-  live cart at charge time and charges *that*, not the quoted total. The fingerprint check
-  narrows the window to sub-millisecond and same-customer-only but explicitly does not close it.
-- **`S15`** — `place_order` does not pass the quote's `mandateId` down;
-  `reservePayService.prepareDebit` re-resolves "the live mandate" via `getLiveMandate`. A customer
-  who revokes and recreates their block between `prepare_order` and `place_order` is charged
-  against a mandate the signed quote never named — and the signature still verifies, because
-  nothing checks `mandateId`.
-
-Fix as one change: build order items and prices from the snapshot, pass the quoted total and
-`mandateId` down, and refuse to charge on divergence rather than recording it and proceeding.
-
-### 6. `getOrCreateActiveCartId` has a lost-update race  `S12`
-
-`cartService.ts:13` selects, sees nothing, inserts. Two concurrent callers both insert;
-`carts.user_id` is unique, so the loser throws a raw unique violation that nothing catches and it
-escapes as a bare 500. This is the hottest path in the backend — every cart route, every cart
-tool, `prepare_order`, `place_order` and `buildTurnContext` call it — and it is newly reachable
-from parallel MCP tool calls, which have no client-side serialisation.
-
-Every other insert-after-check in the codebase already handles this. Use the same shape
-`chatService.resolveConversation` uses: `onConflictDoNothing().returning()`, re-read on empty.
-
-### 7. No rate limiting anywhere  `S4`
+### 7. No rate limiting anywhere  `S4`  — **STILL OPEN**
 
 No middleware, no dependency, no per-IP or per-account counter on any route. The ones that matter:
 
@@ -181,201 +109,71 @@ No middleware, no dependency, no per-IP or per-account counter on any route. The
   amplification vector**, and the most likely way this project gets hurt in a public demo.
 - **`POST /api/auth/login`** — credential stuffing, and a CPU denial-of-service besides:
   `Bun.password.verify` is deliberately slow, so unthrottled requests are a direct lever on the
-  process.
+  process. Now slightly worse, not better: the enumeration fix (old item 11) makes the *miss* path
+  pay for an argon2 verify too, which is correct for privacy and doubles the cost of a flood.
 - **`POST /api/admin/login`** — one shared, unrotatable password guarding the whole operator
-  surface, with unlimited guesses. The most valuable credential in the system and the cheapest to
-  attack.
+  surface, with unlimited guesses. The compare is now constant-time, but volume is untouched and
+  remains the cheapest attack on the most valuable credential in the system.
 - **`POST /api/auth/signup`** — unlimited account creation, no verification.
 - **`POST /oauth/register`** — unauthenticated RFC 7591 dynamic client registration; unbounded
   rows in `oauth_clients`, and `registerClientSchema.redirect_uris` has no array-length or
-  per-URI length cap, so one request can store an arbitrarily large jsonb value.
+  per-URI length cap, so one request can store an arbitrarily large jsonb value. (The global
+  256 KB body limit now bounds a single request, but not the row count.)
 - **`POST /oauth/token`** — a free DB-read amplifier (guessing itself is unrealistic against
   32 random bytes).
 - **`GET /api/reserve-pay/mandates/:id`** — each call re-syncs against Razorpay, up to two live
-  API calls, so a tight poll hammers Razorpay as well as us.
+  API calls. The `syncMandate` freshness window (old P1 item 6) does **not** help here: this
+  endpoint is the approval poll and deliberately passes `force: true`.
 
 One middleware file covering all of the above.
 
-### 8. Admin login: non-constant-time compare, no lockout  `S5`
+### Closed in this pass
 
-`services/adminAuthService.ts` — `password !== env.ADMIN_PASSWORD`. Use
-`crypto.timingSafeEqual` on equal-length buffers; it costs nothing and removes the question.
-Materially more relevant once item 7 lands and volume is no longer the attacker's easiest lever.
+| # | Item | Where it landed |
+|---|---|---|
+| 1 | `minPrice`/`maxPrice` unbounded on a public endpoint | `schemas/product-query.schema.ts`, capped at `MAX_PRODUCT_PRICE` |
+| 2 | Cart quantity uncapped on the REST path | `schemas/cart.schema.ts` **and** `cartService.addItem`, against the resulting line; the false comment in `tools/cart.ts` rewritten |
+| 3 | REST add-to-cart ignored `inStock` | `cartService.addItem`, so both callers inherit it |
+| 4 | `deliverySlot` accepted arbitrary free text | validated against `DELIVERY_SLOT_LABELS` |
+| 5 | Order items from the live cart, totals from the snapshot (+`S14`, `S15`) | `CheckoutSnapshot.lines`; `place_order` passes the quoted total and `mandateId`, and the charge is refused on divergence |
+| 6 | `getOrCreateActiveCartId` lost-update race (`S12`) | `onConflictDoNothing().returning()` + re-read |
+| 8 | Admin login not constant-time (`S5`) | `crypto.timingSafeEqual` over sha256 digests. **No lockout — that half belongs to item 7** |
+| 9 | Live-money test harness on the production route table (`S10`) | registered only under `RESERVE_PAY_TEST_DEBIT_ROUTE` |
+| 10 | No webhook replay guard (`S17`) | `markDebitOutcome` is a transition table; `captured -> failed` refused |
+| 11 | Login leaked which emails are registered | dummy-hash verify on the miss path. **Signup still leaks** — see below |
+| 12 | No request body size limit | `hono/body-limit` at `MAX_REQUEST_BODY_BYTES` |
+| 13 | Unbounded conversation creation | `MAX_CONVERSATIONS_PER_USER`, both creation paths |
 
-### 9. A live-money test harness is on the production route table  `S10`
-
-`POST /api/reserve-pay/mandates/debit` (`routes/reserve-pay.ts:54`) charges the caller's Reserve
-Pay block for an arbitrary amount and creates no order. Its own comment calls it a test harness.
-Any authenticated user can call it, and nothing gates it behind an env flag.
-
-Its sibling `/sim/*` routes in the same file get this exactly right — *"a control that can move a
-mandate's status should not exist as a route at all in a real deployment."* Apply the same
-pattern, or delete the route.
-
-### 10. No webhook replay guard  `S17`
-
-`verifyWebhookSignature` proves a body came from Razorpay; nothing stops the same signed body
-being replayed. Most handlers are naturally idempotent (`syncMandate` re-reads from the gateway,
-`confirmPayment` short-circuits on an existing order). `markDebitOutcome` is not — it is an
-unconditional `UPDATE`, so a stale `payment.failed` redelivered after a successful capture flips a
-`captured` debit back to `failed` and corrupts the reconciliation ledger.
-
-Preferred fix: refuse to move a debit row out of a terminal state. Alternative: store event ids
-and reject duplicates.
-
-### 11. Login and signup leak which emails are registered  `[new]`
-
-`userService.verifyCredentials` returns before `Bun.password.verify` when the email is unknown, so
-an unknown address answers in ~0ms and a known one takes an argon2 verify. The response text is
-correctly identical (see `handled.md` §7); the timing is not. Run the verify against a dummy hash
-on the miss path.
-
-`createUser` throws `ConflictError("An account with this email already exists")`, which leaks the
-same fact directly. Worth reconsidering alongside the password-reset work in P2, since a
-non-enumerating signup and a non-enumerating forgot-password want the same treatment.
-
-### 12. No request body size limit  `[new]`
-
-No `hono/body-limit`, no `maxRequestBodySize`. Unauthenticated routes (`/api/auth/signup`,
-`/api/auth/login`, `/oauth/register`, `/oauth/token`, `/webhooks/razorpay`) accept arbitrarily
-large bodies — a cheap memory/CPU lever, compounded by the absence of item 7.
-
-### 13. Unbounded conversation creation  `[new]`
-
-`chatService.resolveConversation` accepts a client-supplied `conversationId` with
-`createIfMissing`, so a client can mint unlimited `conversations` rows. Cap per user, or stop
-honouring arbitrary client UUIDs for creation.
-
----
+**Deliberately left open from item 11:** `userService.createUser` still throws
+`ConflictError("An account with this email already exists")`, which leaks the same fact the login
+timing fix just closed. Not fixed here because a non-enumerating signup and a non-enumerating
+forgot-password want the same treatment, and that is P2. Recorded in `handled.md` §7 so it is not
+mistaken for done.
 
 ## P1 — performance
 
-**Start here: only four indexes exist in the entire schema.** Verified across
-`drizzle/*/migration.sql`: `conversations(user_id, updated_at)`,
-`chat_messages(conversation_id, created_at)`, and the two partial uniques on
-`reserve_pay_mandates` and `cart_mandates`. Everything else relies on primary keys and `.unique()`
-columns.
+**All closed.** The schema went from four indexes to fifteen, and the two worst query shapes
+(1+2N order hydration, unindexable search) are gone.
 
-### 1. Missing indexes  `L4`
+| # | Item | Where it landed |
+|---|---|---|
+| 1 | Missing indexes (`L4`) | 11 new indexes incl. the first two on `audit_log`, which had none |
+| 2 | `GET /api/orders` was 1+2N and unpaginated (`L1`, `L9`) | `orderService.attachItems`; `{limit, offset}` in the service, `?limit/?offset` on the route, same for the admin listing and dashboard |
+| 3 | Product search could not use an index (`L3`) | `pg_trgm` GIN on `name`, plain GIN on `tags`, tag clause rewritten to `&&`; `%`/`_` escaped |
+| 4 | Duplicate count query on every listing (`L2`) | `count(*) over()` + `utils/paginate.ts` |
+| 5 | `loadHistory` read the whole transcript (+`S3`) | `ORDER BY … DESC LIMIT`, then walk forward to a turn boundary |
+| 6 | `syncMandate` called far more than needed (`L5`) | `synced_at` + `RESERVE_PAY_SYNC_FRESHNESS_SECONDS`; pollers and webhooks pass `force` |
+| 7 | `buildTurnContext` inlined every address (`A12`) | capped at `MAX_CONTEXT_ADDRESSES`, default first |
+| 8 | `search_products_nl` offered to the chat model (`A1`), filter builder under-fed (`A2`) | `ToolDefinition.surfaces`; prompt now gets `slug — name — description` |
+| 9 | `temperature: 0.3` in a tool-calling loop (`A6`) | `0` |
+| 10 | Sorts had no tiebreaker, `newest` did not sort by age (`L6`) | `asc(products.id)` on every sort; `products.created_at` added |
 
-Not indexed, despite being queried by exactly these columns:
-
-- `orders.user_id` — `listOrders`, `getOrderById`, admin filtering
-- `order_items.order_id` — every order hydration
-- `addresses.user_id`
-- `cart_mandates.user_id` — `getOpenCartMandate`, called on every chat turn
-- `products.category_id`
-- `reserve_pay_debits.mandate_id`
-- `oauth_refresh_tokens(user_id, client_id)`
-- **`audit_log` — no index at all.** This is the table the entire audit story depends on being
-  queryable, and there is no way to fetch one actor's rows, or one action's, without a full scan.
-  Index actor and `created_at`.
-
-### 2. `GET /api/orders` is 1 + 2N queries and unpaginated  `L1` + `L9`
-
-`orderService.listOrders:283` selects the order rows, then maps every one through
-`getOrderWithItems`, which **re-selects the order it was just handed** plus its items. Twenty
-orders is 41 round trips, over an unindexed `user_id`, with no limit or offset anywhere.
-
-Replace with two queries: the orders, then all items for those order ids via
-`inArray(orderItems.orderId, ids)`, grouped in memory. Push `limit`/`offset` into the service —
-`agent-interfaces/tools/orders.ts` currently fetches everything and slices afterwards (`L9`, its
-own comment says so). `adminOrderService.listOrders` has the same shape via `withDetail` with
-`pageSize` capped at 100, so an admin page can be 200 round trips, and
-`adminDashboardService.summary` inherits it for the recent-orders panel.
-
-### 3. Product search cannot use an index  `L3`
-
-`services/productSearch.ts` is `ILIKE '%term%'` on `products.name` OR'd with an
-`EXISTS (SELECT 1 FROM unnest(tags) …)`. Neither side is indexable — a leading-wildcard `ILIKE`
-cannot use a btree, and the `unnest` subquery defeats the GIN index `tags` would otherwise
-support. Every search is a sequential scan, on the hottest path both the chat agent and MCP
-callers take.
-
-Add a `pg_trgm` GIN index on `name` (which also buys typo tolerance) and rewrite the tag clause to
-`tags && ARRAY[...]` so a plain GIN applies. The file is already isolated behind one function
-specifically so this can be swapped without touching `productService` or any tool.
-
-While here: the term is interpolated into the pattern without escaping `%` or `_`, so a caller can
-inject wildcards. Harmless today, but escape them.
-
-### 4. Duplicate count query on every listing  `L2`
-
-`productService.listProducts` runs the filtered query and a second query repeating the same join
-and where clause purely for `count(*)`. A `count(*) over()` window on the first query returns
-both in one round trip. Same shape in `adminProductService.list` and `adminUserService.listUsers`.
-
-### 5. `loadHistory` reads the whole transcript to keep 40 rows  `[new]` + `S3`
-
-`chatService.ts:78` selects **every** `chat_messages` row for the conversation — each holding a
-full OpenRouter message including tool results as JSONB — and then slices the last
-`MAX_HISTORY_MESSAGES` in JavaScript. Every chat turn's cost grows with conversation length.
-Use `ORDER BY created_at DESC LIMIT` and reverse.
-
-**Do this together with `S3`**, which touches the same slice: `rows.slice(-40)` cuts by row count,
-not by turn boundary, and each tool round produces an `assistant` row carrying `toolCalls` plus a
-`tool` row carrying the result. A cut landing between them produces a `tool` message with no
-matching `assistant`, which every OpenAI-compatible endpoint rejects with a 400. The failure is
-**not transient** — history only grows, so once a conversation crosses the boundary unluckily,
-every subsequent turn in it fails identically with "The assistant hit a problem. Try again?"
-Walk backwards and stop at a `user` or tool-call-free `assistant` row.
-
-### 6. `syncMandate` is called far more often than it needs to be  `L5`
-
-It costs up to two Razorpay round trips (`fetchPayment` + `fetchCustomerToken`) and is called from
-`createMandate`, `getMandate`, `prepare_order`, `get_payment_status`, `check_reserve_pay_status`,
-`prepareDebit` and four webhook branches. One checkout conversation can hit Razorpay six or more
-times.
-
-Add a short freshness window — skip the sync if the row was synced in the last N seconds — with
-`check_reserve_pay_status` opting out, since polling is its whole purpose. This weakens nothing:
-the actual correctness guarantee is `prepareDebit`'s conditional `UPDATE`, which re-checks the
-balance atomically in the database regardless of how fresh the sync was.
-
-### 7. `buildTurnContext` inlines every saved address, uncapped  `A12`
-
-`llm/turnContext.ts` loops over all addresses into the context block prepended to every turn.
-Fine at two; at forty it is the largest thing in the prompt and pushes conversation history out of
-the window — degrading exactly the thing the context block exists to improve. Cap it (default
-first, then most recent N) and tell the model to call `list_addresses` for the rest, mirroring the
-treatment cart line items already get in the same file.
-
-### 8. `search_products_nl` is offered to the chat model  `A1`, and the filter builder is under-fed  `A2`
-
-`chatService.ts:261` filters exactly one tool from the model's list (`place_order`), so
-`search_products_nl` is offered to the chat agent — which is itself an LLM. It spends a *second*
-LLM call producing filters the chat model could have produced itself, for free, by calling
-`search_products` directly: an extra round trip, a second failure mode, and the possibility of two
-models disagreeing about one query. The tool was built for MCP callers with no LLM of their own.
-Make it MCP-only — preferably by adding a `surfaces: ("chat" | "mcp")[]` field to
-`ToolDefinition` rather than extending a filter predicate that already carries an unrelated safety
-meaning.
-
-`A2` is the highest accuracy-per-effort item in this file: `searchAssistService` fetches full
-category rows and then passes `categories.map(c => c.slug)` — slugs only — into the prompt, so the
-model has to map "milk" → `dairy-eggs` from the slug string alone. The rows already carry `name`
-and `description`, already in memory. Pass `slug — name — description` triples.
-
-### 9. `temperature: 0.3` in a tool-calling loop  `A6`
-
-`llm/agentLoop.ts:61`. There is no upside to sampling noise in a UUID, a slot id or a category
-slug, and arguments are where accuracy actually matters. The prose-quality argument is weak here
-because the system prompt already constrains output to one or two short sentences.
-`llm/searchQueryBuilder.ts` already uses `0` for exactly this reason.
-
-### 10. Sorts have no tiebreaker, and `newest` does not sort by age  `L6`
-
-`productService.ts` applies a single ordering key per sort and no secondary key, so rows with
-equal keys come back in planner order — which is not stable across pages, meaning **paginated
-results can repeat or skip products**. This is the backend half of `web/issues.md`'s pagination
-bug. Add a stable tiebreaker (`products.id`) to every sort.
-
-Separately, the `newest` branch orders by whether the product carries the `new` *tag*, because
-`products` has no `created_at` column (`adminProductService` comments on the same gap and falls
-back to `archivedAt`). Either add `created_at` — cheap, and it makes the admin sort honest too —
-or rename the option to what it does.
-
----
+**One recall trade to know about (item 3):** the tag clause is now exact element overlap, where it
+used to be a substring `ILIKE`. Searching `organ` no longer matches the tag `organic`. Accepted —
+the tag clause is a bonus path and `name` still matches substrings. Also note `pg_trgm` here makes
+search **fast, not fuzzy**: `choclate` still returns nothing. The index is the prerequisite for
+fuzzy matching, but turning it on is a recall decision (`A3`/`A4`/`A5`) rather than a free side
+effect.
 
 ## P2 — password reset (new feature, real email)
 
@@ -396,7 +194,8 @@ double-use loses deterministically.
 
 - `POST /api/auth/forgot-password` `{email}` → **always `200`**, whether or not the address
   exists. This is the whole point: a distinguishable response reintroduces the enumeration
-  problem P0 item 11 is closing. Sends a link to
+  problem the login-timing fix closed (old P0 item 11) — and `createUser` still leaks it directly,
+  which is why that half was left for this change. Sends a link to
   `${PUBLIC_APP_URL}/reset-password?token=…`.
 - `POST /api/auth/reset-password` `{token, password}` → consumes the token, re-hashes with
   `Bun.password.hash`, returns `200`. Invalid/expired/consumed tokens all answer the same way, per
@@ -409,48 +208,24 @@ same change.
 
 ---
 
-## Recommended alongside
+## Recommended alongside — **all closed**
 
-Cheap, and they touch files the work above already opens.
-
-- **`S3`** — do it with P1 item 5, same read path.
-- **`S11`** — `agent-interfaces/tools/orders.ts` imports `db` and runs its own select to resolve
-  an order number, violating the Service Layer Rule that `/agent-interfaces` never touches the
-  database. Harmless today (it is a read, and `getOrderById` still checks ownership on the next
-  line) but it is the crack the rule exists to prevent. Add
-  `orderService.getOrderByNumber(userId, orderNumber)`.
-- **`S13`** — `mandateService.markStatus` does `set({ status, orderId: orderId ?? null, … })`, so
-  calling it without an `orderId` **nulls any existing one**. That column is what makes
-  `place_order` idempotent; clearing it turns a safe retry into a second charge. Not reachable
-  today — every call that omits it targets an `open` quote, which has none — but it is a loaded
-  footgun on the one column that prevents double-charging. Only include `orderId` in the patch
-  when it is provided.
-- **`S16`** — `agent-interfaces/mcp/index.ts` flattens `{code, message, retryable, hint}` into a
-  plain text `content` block, so `code` and `retryable` never reach an MCP client. The whole
-  tool-error design exists so a caller can branch on the code: `chat/partMapper.ts` uses exactly
-  that to ensure `payment_declined` never offers a retry, because the charge may have succeeded
-  and only its proof is suspect. An MCP client gets a string and has to guess. **Now more
-  important than when it was filed** — MCP `place_order` is deliberately open, so an MCP client
-  guessing wrong retries into a double-charge attempt. Set `structuredContent` on the error path
-  too; MCP supports it, and the success path one branch up already uses it.
-- **`A8`** — MCP tool annotations are half-filled: `readOnlyHint: tool.readOnly` and nothing else.
-  Clients use `destructiveHint` / `idempotentHint` / `openWorldHint` to decide what to run without
-  asking a human. Same reasoning as `S16` — this is the cheapest per-tool safety improvement
-  available on the surface we just opened. `clear_cart` → `destructiveHint: true`; `place_order` →
-  `idempotentHint: true` (it genuinely is, by `quoteId`, and advertising it tells a client a retry
-  after a timeout is safe); `add_to_cart` → `idempotentHint: false` (additive, a blind retry
-  double-adds); `update_cart_item` / `remove_from_cart` → `idempotentHint: true`. Wants a per-tool
-  annotations field on `ToolDefinition` rather than being derived from `readOnly`.
-- **`A9`** — `registry.mapError` maps `UNAUTHORIZED` and `FORBIDDEN` to "Not available" with **no
-  hint**, while every other branch has one and the file's own comment says the hint is what turns
-  a failure into a recovery. The anti-probing choice is right; the dead end is not. "That belongs
-  to a different account. Call `list_orders` to see this customer's own orders." leaks nothing.
-- **`A11`** — `clients/openrouter.ts` sends a `modelChain` and OpenRouter fails over server-side,
-  so a degraded answer cannot be attributed to a model. `response.model` is on every response and
-  is read nowhere; neither is token usage, so there is no per-turn cost or latency record. Log
-  both — it is the only cost visibility in the system, and it complements the new rate limits.
-
----
+- **`S3`** — done with P1 item 5, same read path.
+- **`S11`** — `orderService.getOrderByNumber(userId, orderNumber)` added; `tools/orders.ts` no
+  longer imports `db`. `grep -rn 'from "../../db"' src/agent-interfaces` is now empty, which is
+  the check the Service Layer Rule wants.
+- **`S13`** — `mandateService.markStatus` only includes `orderId` in the patch when it is
+  provided, so it can no longer null the column that makes `place_order` idempotent.
+- **`S16`** — the MCP error path sets `structuredContent`, so `code` and `retryable` reach the
+  client instead of being flattened into prose.
+- **`A8`** — per-tool `annotations` on `ToolDefinition`, filled in for every write tool. Written
+  by hand rather than derived from `readOnly`, since `add_to_cart` (additive) and
+  `update_cart_item` (absolute) are both writes with opposite idempotency.
+- **`A9`** — the `UNAUTHORIZED`/`FORBIDDEN` branch keeps its anti-probing message and now carries
+  a hint.
+- **`A11`** — the per-round LLM log line carries the answering model, latency and token usage.
+  This is the only cost visibility in the system, and it is what makes item 7's absence
+  measurable in the meantime.
 
 ## Backlog — not scheduled
 
@@ -475,8 +250,10 @@ Cheap, and they touch files the work above already opens.
 - **`A3` / `A4` / `A5`** — search recall. Nothing retries on zero results; `search_products_nl`'s
   `{}` fallback passes the customer's whole sentence into an `ILIKE` substring match on product
   names, which is a guaranteed miss dressed as a normal empty result. The root cause is that
-  search never matches descriptions and only by substring — P1 item 3's `pg_trgm` work is the
-  affordable half of the fix; embeddings are the other.
+  search never matches descriptions and only by substring. The `pg_trgm` index is now in place
+  (closed P1 item 3), so the affordable half — a `similarity()` threshold for typo tolerance — is
+  a query change away; embeddings are the other half. Note the index alone changed nothing about
+  recall.
 - **`A7`** — `MAX_ROUNDS = 8` with `parallelToolCalls: false` is tight for a cold checkout, which
   is seven rounds with no slack for one failure and a recovery. The sequential constraint is
   justified for mutations and unnecessary for reads; `ToolDefinition.readOnly` is already the
