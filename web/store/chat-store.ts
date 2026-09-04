@@ -16,6 +16,7 @@ import { ApiError } from "@/lib/api/client";
 import { useCartStore } from "@/store/cart-store";
 import { getChatTransport } from "@/lib/chat/transport";
 import { buildClientState } from "@/lib/chat/client-state";
+import { toPlainText } from "@/lib/chat/format";
 import {
   CHAT_PROTOCOL_VERSION,
   lastTransientPartId,
@@ -262,11 +263,14 @@ async function speakMessage(set: SetFn, get: GetFn, messageId: string) {
 
   // Only prose is speakable. A widget-only reply (a product grid, an address picker) produces
   // no utterance at all — reading a grid aloud would be worse than the silence.
-  const text = message.parts
-    .filter((part) => part.type === "text")
-    .map((part) => part.text.trim())
-    .filter(Boolean)
-    .join(" ");
+  // The prose is markdown (the transcript renders it as such), so strip the syntax before it is
+  // spoken — otherwise "**placed**" is read out with its asterisks.
+  const text = toPlainText(
+    message.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join(" ")
+  );
   if (!text) return;
 
   const token = useAuthStore.getState().token;
