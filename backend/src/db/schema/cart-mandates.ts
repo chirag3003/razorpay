@@ -6,6 +6,7 @@ import {
   timestamp,
   check,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./users";
@@ -83,5 +84,8 @@ export const cartMandates = pgTable(
     uniqueIndex("cart_mandates_one_open_per_user")
       .on(t.userId)
       .where(sql`${t.status} = 'open'`),
+    // getOpenCartMandate runs on every chat turn; the partial unique above only covers `open`
+    // rows, so a plain user_id index is still needed for getCartMandate and history reads.
+    index("cart_mandates_user_idx").on(t.userId),
   ]
 );
