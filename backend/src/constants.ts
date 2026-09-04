@@ -87,6 +87,13 @@ export const MAX_CONVERSATIONS_PER_USER = 200;
 // not to truncate any realistic history while still bounding the query.
 export const MAX_ORDER_PAGE_SIZE = 100;
 
+// How many saved addresses buildTurnContext inlines into the block prepended to EVERY chat turn.
+// Fine at two; at forty the address list is the largest thing in the prompt and pushes
+// conversation history out of the window — degrading exactly the thing the context block exists
+// to improve. Past this the model is told to call list_addresses, mirroring how cart line items
+// are already handled in the same file.
+export const MAX_CONTEXT_ADDRESSES = 5;
+
 // The signed order quote from prepare_order. Short-lived: it freezes a price, and the longer it
 // lives the more likely the cart behind it has moved.
 export const CART_MANDATE_TTL_MINUTES = 15;

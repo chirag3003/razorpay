@@ -1,3 +1,4 @@
+import { MAX_CONTEXT_ADDRESSES } from "../constants";
 import * as addressService from "../services/addressService";
 import * as cartService from "../services/cartService";
 import * as mandateService from "../services/mandateService";
@@ -94,10 +95,24 @@ export async function buildTurnContext(input: {
   if (addresses.length === 0) {
     lines.push("Addresses: none saved. create_address is required before checkout.");
   } else {
+    // Default first, then the rest in their existing order, capped. `addresses` has no createdAt
+    // column, so "most recent N" is not available — and is not worth a column for this.
+    const ordered = [...addresses].sort(
+      (a, b) => Number(b.isDefault) - Number(a.isDefault)
+    );
+    const shown = ordered.slice(0, MAX_CONTEXT_ADDRESSES);
+
     lines.push(`Addresses (${addresses.length}):`);
-    for (const address of addresses) {
+    for (const address of shown) {
       lines.push(
         `  - ${address.id} · ${address.type}${address.isDefault ? " (default)" : ""} · ${addressOneLine(address)}`
+      );
+    }
+
+    if (addresses.length > shown.length) {
+      lines.push(
+        `  …and ${addresses.length - shown.length} more. Call list_addresses for the full list — ` +
+          `do not assume an address that isn't shown here is missing.`
       );
     }
   }
