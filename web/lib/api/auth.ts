@@ -26,8 +26,6 @@ export function getMe(token: string) {
   return apiFetch<{ user: User }>("/api/auth/me", { token });
 }
 
-// Not implemented by the backend yet — see backend/issues.md. Calling this
-// will fail until PATCH /api/auth/me is added there.
 export function updateProfile(
   token: string,
   data: Partial<{ name: string; email: string; phone: string }>

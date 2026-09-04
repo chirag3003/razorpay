@@ -23,6 +23,7 @@ type AuthState = {
     password: string;
   }) => Promise<void>;
   logout: () => void;
+  setUser: (user: User) => void;
   hydrateFromServer: () => Promise<void>;
 };
 
@@ -49,6 +50,12 @@ export const useAuthStore = create<AuthState>()(
         set({ user: null, token: null, status: "unauthenticated" });
         useCartStore.getState().reset();
       },
+
+      // Write back a user the server has just returned (e.g. PATCH /api/auth/me).
+      // The account form is driven by `useForm({ values: user })`, so without
+      // this react-hook-form resets the fields to the stale store values on the
+      // next render and a saved edit looks discarded.
+      setUser: (user) => set({ user }),
 
       hydrateFromServer: async () => {
         const token = get().token;
