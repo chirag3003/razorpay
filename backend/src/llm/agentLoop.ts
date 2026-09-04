@@ -58,7 +58,11 @@ async function* streamOnce(
         tools: tools.length > 0 ? tools : undefined,
         // Sequential calls keep the audit trail and cart mutations deterministically ordered.
         parallelToolCalls: false,
-        temperature: 0.3,
+        // 0, not 0.3. Sampling noise has no upside in a UUID, a slot id or a category slug, and
+        // tool arguments are where accuracy actually matters; the prose-quality argument is weak
+        // because the system prompt already constrains output to one or two short sentences.
+        // searchQueryBuilder.ts already uses 0 for exactly this reason.
+        temperature: 0,
         maxTokens: 1_500,
         stream: true,
       },
