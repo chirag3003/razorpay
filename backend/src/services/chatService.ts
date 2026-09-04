@@ -121,6 +121,10 @@ function isSafeHistoryStart(message: ChatMessages): boolean {
 }
 
 async function loadHistory(conversationId: string): Promise<ChatMessages[]> {
+  // Ordered by `seq`, never by createdAt: persistTurn writes a whole turn in one transaction and
+  // defaultNow() is transaction-start time, so every row of a turn shares a timestamp and
+  // ordering by it returns them in arbitrary order. See the seq column's comment.
+  //
   // Newest-first with a LIMIT, then reversed — the whole transcript was previously read on every
   // turn, each row holding a full OpenRouter message with tool results as JSONB, just to keep the
   // last MAX_HISTORY_MESSAGES. Cost grew with conversation length, unboundedly.
@@ -131,7 +135,7 @@ async function loadHistory(conversationId: string): Promise<ChatMessages[]> {
     .select()
     .from(chatMessages)
     .where(eq(chatMessages.conversationId, conversationId))
-    .orderBy(desc(chatMessages.createdAt))
+    .orderBy(desc(chatMessages.seq))
     .limit(MAX_HISTORY_MESSAGES * 2);
 
   // Raw OpenRouter messages, replayed verbatim — reconstructing them from rendered widgets is
@@ -153,7 +157,55 @@ async function loadHistory(conversationId: string): Promise<ChatMessages[]> {
     return [];
   }
 
-  return messages.slice(start);
+  return dropOrphanedToolMessages(messages.slice(start), conversationId);
+}
+
+/**
+ * Last line of defence: drop any `tool` message whose matching `assistant` tool call is not the
+ * one immediately open.
+ *
+ * The boundary walk above only fixes where the window *begins*; it cannot repair a window whose
+ * rows are interleaved. That used to happen whenever history was ordered by `createdAt` (see the
+ * seq column), and the consequence was not a clean rejection — the provider accepted the request
+ * and then **never responded**, so the turn hung with no error, no log, and no timeout.
+ *
+ * Ordering by `seq` is the actual fix and this should now never fire. It stays because the cost
+ * of being wrong here is a wedged request rather than a bad answer, and a WARN plus a slightly
+ * lossy turn is a much better failure than silence.
+ */
+function dropOrphanedToolMessages(
+  messages: ChatMessages[],
+  conversationId: string
+): ChatMessages[] {
+  let openCallIds = new Set<string>();
+  const kept: ChatMessages[] = [];
+  let dropped = 0;
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      const raw = message as { toolCalls?: { id?: string }[]; tool_calls?: { id?: string }[] };
+      const calls = raw.toolCalls ?? raw.tool_calls ?? [];
+      openCallIds = new Set(calls.map((call) => call.id).filter((id): id is string => !!id));
+    } else if (message.role === "tool") {
+      const raw = message as { toolCallId?: string; tool_call_id?: string };
+      const id = raw.toolCallId ?? raw.tool_call_id;
+      if (!id || !openCallIds.has(id)) {
+        dropped++;
+        continue;
+      }
+    }
+    kept.push(message);
+  }
+
+  if (dropped > 0) {
+    logger.warn("chat", "dropped orphaned tool messages from history", {
+      conversationId,
+      dropped,
+      note: "ordering is wrong — should not happen now that seq exists",
+    });
+  }
+
+  return kept;
 }
 
 /** The rendered transcript, for a `{kind:"resume"}` turn. */
@@ -164,7 +216,7 @@ export async function loadTranscript(userId: string, conversationId: string) {
     .select()
     .from(chatMessages)
     .where(eq(chatMessages.conversationId, conversationId))
-    .orderBy(asc(chatMessages.createdAt));
+    .orderBy(asc(chatMessages.seq));
 
   return rows.filter((row) => row.parts && row.parts.length > 0);
 }

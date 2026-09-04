@@ -5,7 +5,14 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { toast } from "sonner";
 import { getAddresses } from "@/lib/api/addresses";
 import { getChatTranscript } from "@/lib/api/chat";
-import { useAuthStore } from "@/store/auth-store";
+import {
+  base64ToAudioBlob,
+  isVoiceUnavailable,
+  synthesizeSpeech,
+  transcribeAudio,
+} from "@/lib/api/voice";
+import { useAuthStore, handleAuthApiError } from "@/store/auth-store";
+import { ApiError } from "@/lib/api/client";
 import { useCartStore } from "@/store/cart-store";
 import { getChatTransport } from "@/lib/chat/transport";
 import { buildClientState } from "@/lib/chat/client-state";
@@ -172,9 +179,25 @@ type ChatState = {
   draft: string;
   error: { code: ChatErrorCode; message: string; retryable: boolean } | null;
 
+  /**
+   * Voice is a property of the *turn*, not of the conversation: speak the reply only when the
+   * question was spoken. Typing, or tapping a widget, goes back to a silent reply mid-conversation.
+   * All of it is transient and none of it is persisted — see `partialize` below.
+   */
+  voicePhase: "idle" | "transcribing" | "speaking";
+  /** BCP-47 of the language the user last spoke, to answer in. */
+  voiceLanguage: string | null;
+  /** True while the turn in flight came from the mic. */
+  spokenTurn: boolean;
+  /** The server has no Sarvam key: hide the mic rather than offer a button that 503s. */
+  voiceUnavailable: boolean;
+
   openChat: () => void;
   closeChat: () => void;
   setDraft: (draft: string) => void;
+  /** Transcribe a recording, then send it as an ordinary text turn. */
+  sendVoice: (audio: Blob, filename: string) => Promise<void>;
+  stopSpeaking: () => void;
   refreshAddresses: () => Promise<void>;
   sendText: (text: string) => Promise<void>;
   dispatch: (partId: string, action: WidgetAction) => Promise<void>;
@@ -187,6 +210,80 @@ type ChatState = {
 };
 
 let abortController: AbortController | null = null;
+
+/* -------------------------------------------------------------------------- */
+/* speech playback                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One element and one object URL at a time, module-level for the same reason `abortController`
+ * is: there is only ever one conversation, so a second reply starting must silence the first
+ * rather than talk over it. The URL is revoked on every replacement — a leaked blob URL holds
+ * the decoded audio in memory for the life of the document.
+ */
+let audioElement: HTMLAudioElement | null = null;
+let audioUrl: string | null = null;
+
+function stopPlayback() {
+  audioElement?.pause();
+  audioElement = null;
+  if (audioUrl) URL.revokeObjectURL(audioUrl);
+  audioUrl = null;
+}
+
+async function playSpeech(base64: string): Promise<void> {
+  stopPlayback();
+  audioUrl = URL.createObjectURL(base64ToAudioBlob(base64));
+  const element = new Audio(audioUrl);
+  audioElement = element;
+
+  await new Promise<void>((resolve) => {
+    element.onended = () => resolve();
+    // Autoplay policy, a decode failure, an unplugged output — none of them are worth an error
+    // in the transcript. The reply is already on screen; it just isn't read aloud.
+    element.onerror = () => resolve();
+    element.play().catch(() => resolve());
+  });
+
+  // Another reply may have replaced us while this one played.
+  if (audioElement === element) stopPlayback();
+}
+
+/**
+ * Speak an assistant message, if the turn that prompted it was spoken. Everything here is
+ * best-effort: a failure leaves the reply on screen in text, which is the whole fallback.
+ */
+async function speakMessage(set: SetFn, get: GetFn, messageId: string) {
+  const state = get();
+  if (!state.spokenTurn) return;
+
+  const message = state.messages.find((m) => m.id === messageId);
+  if (!message) return;
+
+  // Only prose is speakable. A widget-only reply (a product grid, an address picker) produces
+  // no utterance at all — reading a grid aloud would be worse than the silence.
+  const text = message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text.trim())
+    .filter(Boolean)
+    .join(" ");
+  if (!text) return;
+
+  const token = useAuthStore.getState().token;
+  if (!token) return;
+
+  set({ voicePhase: "speaking" });
+  try {
+    const speech = await synthesizeSpeech(token, text, state.voiceLanguage ?? "en-IN");
+    await playSpeech(speech.audio);
+  } catch (err) {
+    if (isVoiceUnavailable(err)) set({ voiceUnavailable: true });
+    // Otherwise silent on purpose: the customer can read the reply, and a toast about
+    // synthesis on every turn would be noise.
+  } finally {
+    set((s) => (s.voicePhase === "speaking" ? { voicePhase: "idle" } : s));
+  }
+}
 
 function newMessage(role: ChatMessage["role"], parts: MessagePart[] = []): ChatMessage {
   return {
@@ -227,6 +324,10 @@ export const useChatStore = create<ChatState>()(
       addresses: [],
       draft: "",
       error: null,
+      voicePhase: "idle",
+      voiceLanguage: null,
+      spokenTurn: false,
+      voiceUnavailable: false,
 
       openChat: () => {
         set({ open: true });
@@ -237,7 +338,11 @@ export const useChatStore = create<ChatState>()(
         if (messages.length === 0) void get().rehydrateOrGreet();
       },
 
-      closeChat: () => set({ open: false }),
+      closeChat: () => {
+        // Audio outliving the panel it came from is the most jarring failure here.
+        get().stopSpeaking();
+        set({ open: false });
+      },
 
       setDraft: (draft) => set({ draft }),
 
@@ -254,18 +359,74 @@ export const useChatStore = create<ChatState>()(
       sendText: async (text) => {
         const trimmed = text.trim();
         if (!trimmed) return;
+        // Typing mid-conversation switches the reply back to silent, even if the previous turn
+        // was spoken. Stop any playback still running from that previous turn.
+        get().stopSpeaking();
         set((s) => ({
           messages: [...s.messages, textMessage("user", trimmed)],
           draft: "",
+          spokenTurn: false,
           // Typing free text abandons whatever widget was awaiting an answer.
           activePartId: null,
         }));
         await get().sendTurnInternal({ kind: "text", text: trimmed });
       },
 
+      sendVoice: async (audio, filename) => {
+        const token = useAuthStore.getState().token;
+        if (!token) return;
+
+        get().stopSpeaking();
+        set({ voicePhase: "transcribing" });
+
+        let transcript: string;
+        let languageCode: string;
+        try {
+          const result = await transcribeAudio(token, audio, filename);
+          transcript = result.transcript;
+          languageCode = result.languageCode;
+        } catch (err) {
+          set({ voicePhase: "idle" });
+          if (isVoiceUnavailable(err)) {
+            // Not a failure — voice was never configured here. Hide the control.
+            set({ voiceUnavailable: true });
+            return;
+          }
+          if (handleAuthApiError(err)) return;
+          toast.error(
+            err instanceof ApiError && err.code === "VALIDATION"
+              ? "I didn't catch that — try again?"
+              : "Couldn't transcribe that. You can type instead."
+          );
+          return;
+        }
+
+        // From here the turn is indistinguishable from a typed one: the transcript enters the
+        // transcript as an ordinary user message and goes through the same sendTurnInternal.
+        // Only `spokenTurn` remembers where it came from, and only to decide whether to speak.
+        set((s) => ({
+          messages: [...s.messages, textMessage("user", transcript)],
+          draft: "",
+          activePartId: null,
+          voicePhase: "idle",
+          voiceLanguage: languageCode,
+          spokenTurn: true,
+        }));
+        await get().sendTurnInternal({ kind: "text", text: transcript });
+      },
+
+      stopSpeaking: () => {
+        stopPlayback();
+        set((s) => (s.voicePhase === "speaking" ? { voicePhase: "idle" } : s));
+      },
+
       dispatch: async (partId, action) => {
         const spec = ACTION_SPECS[action.type];
         if (!spec) return;
+
+        // A tap is not speech: whatever this turn replies with, it replies in text.
+        get().stopSpeaking();
+        set({ spokenTurn: false });
 
         if (spec.effect) {
           try {
@@ -304,6 +465,7 @@ export const useChatStore = create<ChatState>()(
       resetConversation: () => {
         abortController?.abort();
         abortController = null;
+        stopPlayback();
         const conversationId = crypto.randomUUID();
         writeStoredConversationId(conversationId);
         set({
@@ -315,6 +477,9 @@ export const useChatStore = create<ChatState>()(
           pendingActions: [],
           draft: "",
           error: null,
+          voicePhase: "idle",
+          voiceLanguage: null,
+          spokenTurn: false,
         });
       },
 
@@ -528,6 +693,8 @@ function applyEvent(
     case "message_end": {
       const message = get().messages.find((m) => m.id === event.messageId);
       const nextActive = message ? lastTransientPartId(message.parts) : null;
+      // Fire-and-forget: the transcript must finish rendering now, not after synthesis.
+      void speakMessage(set, get, event.messageId);
       set((s) => ({
         messages: s.messages.map((m) =>
           m.id === event.messageId ? { ...m, status: "complete" as const } : m
