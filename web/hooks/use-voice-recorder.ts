@@ -59,6 +59,10 @@ export function useVoiceRecorder(onClip: (audio: Blob, filename: string) => void
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoStopRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ending a stream's tracks makes MediaRecorder fire `onstop` on its own, so tearing down while
+  // recording looks exactly like the user tapping stop. This tells the two apart: set it and the
+  // clip is discarded instead of sent.
+  const cancelledRef = useRef(false);
   // Held in a ref so `stop` doesn't have to be recreated when the callback identity changes,
   // which would otherwise re-run the unmount cleanup mid-recording.
   const onClipRef = useRef(onClip);
@@ -81,7 +85,18 @@ export function useVoiceRecorder(onClip: (audio: Blob, filename: string) => void
     recorderRef.current = null;
   }, []);
 
-  useEffect(() => teardown, [teardown]);
+  /** Stop recording and throw the clip away — the user abandoned it. */
+  const cancel = useCallback(() => {
+    cancelledRef.current = true;
+    recorderRef.current?.stop();
+    teardown();
+    setState("idle");
+    setElapsedMs(0);
+  }, [teardown]);
+
+  // Closing the chat panel mid-recording must discard, not send: without this the abandoned clip
+  // is transcribed and posted as a chat turn the user never chose to send.
+  useEffect(() => cancel, [cancel]);
 
   const stop = useCallback(() => {
     const recorder = recorderRef.current;
@@ -138,12 +153,18 @@ export function useVoiceRecorder(onClip: (audio: Blob, filename: string) => void
     streamRef.current = stream;
     recorderRef.current = recorder;
     chunksRef.current = [];
+    cancelledRef.current = false;
 
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunksRef.current.push(event.data);
     };
 
     recorder.onstop = () => {
+      if (cancelledRef.current) {
+        chunksRef.current = [];
+        teardown();
+        return;
+      }
       const type = recorder.mimeType || mimeType || "audio/webm";
       const blob = new Blob(chunksRef.current, { type });
       chunksRef.current = [];
@@ -176,5 +197,5 @@ export function useVoiceRecorder(onClip: (audio: Blob, filename: string) => void
     }, MAX_CLIP_MS);
   }, [state, teardown]);
 
-  return { state, elapsedMs, error, start, stop };
+  return { state, elapsedMs, error, start, stop, cancel };
 }

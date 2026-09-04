@@ -225,7 +225,10 @@ export const MAX_TTS_INPUT_CHARS = 1500;
 export const SARVAM_STT_MODEL = "saaras:v3";
 export const SARVAM_TRANSLATE_MODEL = "mayura:v1";
 export const SARVAM_TTS_MODEL = "bulbul:v3";
-export const SARVAM_TTS_SPEAKER = "anushka";
+// Must be one of bulbul:v3's own voices — the v2 speaker names (anushka, manisha, …) are
+// rejected with a 400, and v2 itself is deprecated, so there is no pairing that accepts them.
+// Verified against the live API; the full v3 list is returned in that 400's message.
+export const SARVAM_TTS_SPEAKER = "shreya";
 
 export const DEFAULT_VOICE_LANGUAGE = "en-IN";
 

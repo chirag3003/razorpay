@@ -277,9 +277,13 @@ async function speakMessage(set: SetFn, get: GetFn, messageId: string) {
     const speech = await synthesizeSpeech(token, text, state.voiceLanguage ?? "en-IN");
     await playSpeech(speech.audio);
   } catch (err) {
-    if (isVoiceUnavailable(err)) set({ voiceUnavailable: true });
-    // Otherwise silent on purpose: the customer can read the reply, and a toast about
-    // synthesis on every turn would be noise.
+    // Only the "not configured" case is worth saying out loud, and only once — the flag hides
+    // the mic afterwards. A synthesis failure stays silent on purpose: the reply is already
+    // readable on screen, and a toast every turn would be noise.
+    if (isVoiceUnavailable(err)) {
+      set({ voiceUnavailable: true });
+      toast.error("Voice isn't set up on this server yet.");
+    }
   } finally {
     set((s) => (s.voicePhase === "speaking" ? { voicePhase: "idle" } : s));
   }
@@ -388,8 +392,11 @@ export const useChatStore = create<ChatState>()(
         } catch (err) {
           set({ voicePhase: "idle" });
           if (isVoiceUnavailable(err)) {
-            // Not a failure — voice was never configured here. Hide the control.
+            // Voice was never configured on this server. Hide the control from here on — but
+            // say so first: silently swallowing this is indistinguishable from a dead button,
+            // and leaves the customer with no idea their recording went nowhere.
             set({ voiceUnavailable: true });
+            toast.error("Voice isn't set up on this server yet. You can type instead.");
             return;
           }
           if (handleAuthApiError(err)) return;
