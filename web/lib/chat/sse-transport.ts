@@ -111,9 +111,11 @@ function parseSseLine(line: string): ServerEvent | null {
 
 async function errorEventFromResponse(res: Response): Promise<ServerEvent> {
   let message = "The assistant hit a problem. Try again?";
+  let code: string | undefined;
   try {
     const body = (await res.json()) as { error?: string; code?: string };
     if (body?.error) message = body.error;
+    code = body?.code;
   } catch {
     // Non-JSON error body — keep the generic message.
   }
@@ -121,6 +123,22 @@ async function errorEventFromResponse(res: Response): Promise<ServerEvent> {
   if (res.status === 401 || res.status === 403) {
     return { type: "error", code: "unauthorized", message, retryable: false };
   }
+
+  // The backend's deliberate 400 when CHAT_PROTOCOL_VERSION drifts. It cannot
+  // self-heal client-side — the tab is running older code — so offering "Try
+  // again" only buys an identical failure. `code` stays "server" on purpose:
+  // this is a transport concern, and ChatErrorCode is hand-mirrored in the
+  // backend's protocol.ts, so adding to it here would introduce real drift.
+  if (code === "PROTOCOL_VERSION_MISMATCH") {
+    return {
+      type: "error",
+      code: "server",
+      message:
+        "This tab is running an older version of the app. Reload the page to update.",
+      retryable: false,
+    };
+  }
+
   return { type: "error", code: "server", message, retryable: true };
 }
 
