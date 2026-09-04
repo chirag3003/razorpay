@@ -10,6 +10,15 @@ instead of this file** — it's the full request/response contract (every route,
 error format, and the Razorpay checkout sequence) written so you don't need to read backend source
 to integrate against it. This file (`CLAUDE.md`) is for people/agents changing backend code.
 
+Two more files worth knowing before you start:
+
+- **`backend/issues.md`** is the single work queue — open bugs, the abuse surface, performance
+  work, and the standing Reserve Pay constraint. It absorbed the old `proposal.md` review, whose
+  `S#`/`L#`/`A#` ids it keeps.
+- **`handled.md`** (repo root) is the inventory of what already fails *gracefully* — the error
+  hierarchy, the idempotency guarantees, the deliberate swallows. Read it before adding a new
+  error path, and add to it when you add one.
+
 ---
 
 ## Layout
@@ -17,8 +26,8 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
 ```
 /backend/src
   /db                 Drizzle schema, client, migrations
-  /schemas            Zod schemas — single source for validation AND for generating
-                       A2A/MCP tool parameter schemas (via zod-to-json-schema or similar).
+  /schemas            Zod schemas — single source for validation AND for the MCP tool parameter
+                       schemas (via zod-4's z.toJSONSchema).
                        Zero dependencies on anything else in the tree.
   /errors             Typed domain error hierarchy (DomainError base + specific subclasses).
                        Zero dependencies on anything else in the tree.
@@ -29,7 +38,7 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
                        AI-callable action logs from exactly one place — runTool in
                        /agent-interfaces/tools/registry.ts — which is what makes chat and MCP
                        show up identically without instrumenting either caller separately.
-  /clients            External SDK instances (razorpay.ts, anthropic.ts), created once
+  /clients            External SDK instances (razorpay.ts, openrouter.ts), created once
   /config             Parses + validates process.env via /schemas/env.schema.ts at boot —
                        fail fast on bad config, don't let a missing key surface mid-request
   /services           All business logic. See "Service Layer Rules" below.
@@ -47,19 +56,20 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
                        @modelcontextprotocol/server, translating runTool's {ok, data|error} into
                        MCP's {content, structuredContent} / {isError, content}. No logic of its
                        own. Mounted at POST /api/mcp (routes/mcp.ts).
-    /a2a               Not built yet. Root claude.md's stated primary interface; MCP shipped
-                       first because it matches the actual "typed structured tool calls, no LLM
-                       needed" caller shape buyer-agent's client already uses for it. See
-                       API.md's MCP section for how this was decided.
-  /webhooks           Razorpay webhook receiver — validates payload via /schemas, calls
-                       recoveryService for payment.failed / subscription.charged events
+    /a2a               Not planned. MCP is the agent interface. A2A sends one free-text
+                       instruction per skill with no structured-args call in its wire protocol,
+                       so every A2A call would need this backend's LLM just to parse intent.
+                       Reasoning in full: API.md's MCP section.
+  /webhooks           Razorpay webhook receiver — validates the payload and the signature, then
+                       routes each event to reservePayService or orderService. Always answers 200
+                       (Razorpay retries any non-2xx); see handled.md section 4.
   /middleware         auth.ts (normal human session auth for REST routes, userService.verifyToken),
                       adminAuth.ts (requireAdmin — the /api/admin token, see Conventions).
                       MCP's bearer-token check is inline in routes/mcp.ts instead of a third
                       middleware file — it's a single call to @modelcontextprotocol/server's
                       requireBearerAuth wrapping userService.verifyAgentToken, not a chain worth
-                      its own file yet. A verifyAgentToken.ts *middleware* (scope/cap → Reserve
-                      Pay balance) stays future work — see "No agent-token scoping yet" below.
+                      its own file. There is no scope/spend-cap middleware and none is planned —
+                      see "Where the human is in the loop" below.
   /utils              Small pure helpers with no app deps. slug.ts (slugify) — shared by the
                       seed script and the admin product/category create endpoints.
   /chat               The storefront chat wire format and its projections. protocol.ts
@@ -72,22 +82,21 @@ to integrate against it. This file (`CLAUDE.md`) is for people/agents changing b
   /routes/oauth.ts    MCP OAuth (RFC 9728/8414/7591 + PKCE). This backend is both the
                       Authorization Server and the Resource Server — see "MCP OAuth" below.
   constants.ts        Regulatory/config numbers centralized — RESERVE_PAY_MAX_AMOUNT (₹10,000),
-                      RESERVE_PAY_MAX_EXPIRY_DAYS (90), spend-cap defaults, etc. Never hardcode
-                      these inline in a service or schema.
+                      RESERVE_PAY_MAX_EXPIRY_DAYS (90), MAX_CART_ITEM_QTY, DELIVERY_SLOTS, etc.
+                      Never hardcode these inline in a service or schema.
   server.ts           Entrypoint
 ```
 
-**There is no test suite yet.** When one is added it belongs in `/backend/tests`, mirroring
-`/services`, and should start with `mandateService` and `reservePayService` — they carry the most
-weight in the project's "bounded/gated" claim.
+**There is no test suite, and one is out of scope.** Verification is `bun x tsc --noEmit` plus
+the manual money-path walkthrough in `issues.md`.
 
 ---
 
 ## Service Layer Rules (this is the load-bearing convention for the whole backend)
 
 - **All order/cart/payment/mandate logic lives in `/services`.** `/routes` and
-  `/agent-interfaces` (both A2A and MCP) must call into the same service functions — never
-  duplicate business logic in a route handler or a task handler.
+  `/agent-interfaces` must call into the same service functions — never duplicate business logic
+  in a route handler or a tool handler, and never reach into the database from either.
 - **Dependency direction is one-way:** `/services` must never import from `/routes` or
   `/agent-interfaces`. Only the reverse is allowed. If a service seems to need something from a
   route, that's a sign the logic belongs in the service and the route is just misplaced.
@@ -96,8 +105,9 @@ weight in the project's "bounded/gated" claim.
 - **Every service function that moves money or checks a mandate must call `auditService`** to
   write a row — actor (token/agent), mandate/scope checked, decision, outcome. An endpoint that
   moves money without an audit write is incomplete, not just under-logged.
-- **Domain errors, not generic throws.** Use the `/errors` hierarchy (`ScopeExceededError`,
-  `MandateExpiredError`, `InsufficientBalanceError`, `PaymentDeclinedError`, etc.) so
+- **Domain errors, not generic throws.** Use the `/errors` hierarchy (`MandateExpiredError`,
+  `InsufficientBalanceError`, `MandateAmountExceededError`, etc. — `handled.md` section 1 has the
+  full table with each one's status and code) so
   `auditService` and both calling layers (routes, agent-interfaces) have one consistent shape to
   catch, log, and translate into a response. The "one graceful failure" demo case should throw
   one of these, not an unhandled exception.
@@ -110,18 +120,22 @@ Cart is **server-side, referenced by ID** — not built client/agent-side and su
 checkout. Decided because: it's the only way both callers (routes, agent-interfaces) can share
 `cartService`'s state; it matches the ACP session model (create→update→complete) already used as
 the checkout semantics reference; it produces a real per-item audit sequence instead of one
-opaque "checkout happened" entry; it lets scope/cap checks fail fast on the item that exceeds the
-cap rather than only at final checkout; it's what lets upsell suggestions ride along in
-`add_item` responses; and it survives an agent-side crash/restart.
+opaque "checkout happened" entry; it lets per-item validation fail fast on the item that breaks a
+rule rather than only at final checkout; and it survives an agent-side crash/restart.
+
+The tools, as they actually exist (`agent-interfaces/tools/`):
 
 ```
-create_cart()                    → returns cart_id
-add_item(cart_id, product, qty)  → validates stock/price, checks running total against the
-                                    token's spend_cap, returns updated cart + upsell suggestions
-remove_item(cart_id, item_id)
-checkout(cart_id)                → re-validates final total, generates the Cart Mandate record,
-                                    runs the Reserve Pay debit, writes audit rows
+get_cart()                            → the caller's one active cart, resolved from userId
+add_to_cart(productId, qty)           → validates stock and the per-line cap; quantity is ADDITIVE
+update_cart_item(itemId, qty)         → absolute quantity
+remove_from_cart(itemId) / clear_cart()
+prepare_order(addressId, slotId)      → re-validates, writes the signed Cart Mandate, takes no money
+place_order(quoteId)                  → runs the Reserve Pay debit, writes audit rows. Idempotent.
 ```
+
+There is no `create_cart`: `cartService.getOrCreateActiveCartId(userId)` is the only place the
+one-cart-per-user assumption lives, and every tool goes through it.
 
 A one-shot "reorder exactly this" convenience is fine to support later, but it must resolve into
 the same server-side cart internally (a helper that front-loads several `add_item` calls) — never
@@ -135,15 +149,14 @@ Every LLM API call in the backend lives in `/llm`, and nowhere else. This makes 
 merchant transaction core" (root CLAUDE.md Hard Rule #1) structurally checkable rather than just
 a written rule.
 - **Never allowed to import `/llm`:** `mandateService.ts`, `reservePayService.ts`,
-  `paymentService.ts`, `verifyAgentToken.ts`, or anything in `/agent-interfaces` task handlers
+  `paymentService.ts`, `orderService.ts`, `cartService.ts`, or anything in `/agent-interfaces`
   that touches cart/checkout/payment.
-- **Allowed to import `/llm`:** `chatService.ts` (the storefront Growth Agent), `growthService.ts`
-  (upsell/cross-sell suggestion text — advisory data only, never itself mutates a cart),
-  `recoveryService.ts` (failure *explanation*/messaging only — root-cause classification itself
-  stays rule-based on decline codes), the admin dashboard assistant, and `searchAssistService.ts`
+- **Allowed to import `/llm`:** exactly two files, and `grep -rn "\.\./llm" src/services
+  src/agent-interfaces` should return exactly these two — that grep is the enforcement.
+  `chatService.ts` (the storefront chat agent's conversation loop) and `searchAssistService.ts`
   (turns a free-text `search_products_nl` query into `search_products`'s structured filters —
-  same "advisory, never itself mutates state" framing as `growthService.ts`; the tool handler in
-  `agent-interfaces/tools/catalog.ts` calls this service, it does not import `/llm` itself).
+  advisory, never mutates state; the tool handler in `agent-interfaces/tools/catalog.ts` calls
+  this service, it does not import `/llm` itself).
 - **No LLM framework.** No LangChain, no LangGraph, no agent SDK. The loop is ~180 lines in
   `llm/agentLoop.ts` and it stays that way deliberately: a framework that owns the loop, the
   tools and the state turns "where does the model touch money" from an import-graph question
@@ -156,8 +169,11 @@ a written rule.
   (`chatService.handlePlaceOrderConfirm`), with no model round trip deciding whether or how to
   call it. A confused model or a prompt injection hiding in a product name cannot place an order
   because the function is never in its hands to begin with — there's no "unless" for it to defeat.
-  If you add another money-moving tool, gate it the same way — do not add a sentence to the
-  system prompt and call it done.
+- **The MCP surface deliberately does not have that property**, and the two must never be
+  conflated. `buildMcpServer` registers every entry of `ALL_TOOLS`, `place_order` and
+  `start_reserve_pay_setup` included. See "Where the human is in the loop" below for the accepted
+  risk in full. If you add another money-moving tool, decide explicitly which of these two models
+  it follows and write it down — do not add a sentence to a system prompt and call it gated.
 - If you're adding an ESLint import-boundary rule to enforce this at build time, it belongs here.
 
 ---
@@ -179,12 +195,16 @@ a written rule.
   `ReservePayGateway` type, not to `reservePayService` as a direct paymentService import.**
 - **One Reserve Pay block per (customer, simulated-merchant) pair** — simulate multiple
   merchants as multiple tokens for the same customer within the one Razorpay test account.
-- **Verification chain, enforced in `verifyAgentToken.ts` middleware, in this order:** token
-  valid/unexpired/unrevoked → requested action within scope/cap → (if payment) Reserve Pay
-  balance check. Don't reorder or short-circuit this — e.g. don't check balance before scope.
-- **Cart Mandate** is a signed `{cart_contents, total_amount, token_id, timestamp}` record,
-  generated in `mandateService.ts` at checkout time, before the Reserve Pay debit call —
-  separate from the token's general scope/cap authority.
+- **Verification chain, in this order:** token valid/unexpired (`middleware/auth.ts` for humans,
+  the inline `requireBearerAuth` in `routes/mcp.ts` for agents) → mandate active, unexpired and
+  within its per-transaction cap → sufficient blocked balance. The last two run in
+  `reservePayService.assertDebitable`, and `prepareDebit`'s conditional `UPDATE` re-checks the
+  balance atomically in the database — that UPDATE, not the guard chain, is the actual correctness
+  guarantee. Don't reorder or short-circuit this. There is no scope/cap step: see
+  "Where the human is in the loop".
+- **Cart Mandate** is a signed `{cart_contents, total_amount, timestamp}` record, generated in
+  `mandateService.ts` at checkout time, before the Reserve Pay debit call — separate from the
+  token's general authority, and what makes `place_order` idempotent.
 
 ---
 
@@ -217,12 +237,27 @@ identity source.
 - **Refresh tokens are hashed at rest and rotated on every use** (`oauth_refresh_tokens.tokenHash`,
   sha256) — a stolen refresh token is replayable exactly once before the legitimate holder's next
   refresh finds it already revoked.
-- **No scope/spend-cap enforcement yet.** `oauthMetadata.scopes_supported` is one blanket
-  `"store:agent"` scope — every tool is available to any connected agent, same as the chat agent
-  today. Root `claude.md`'s fuller "Intent Mandate" design (`scope`, `spend_cap`, tied to a
-  Reserve Pay authorisation via an "Agent Access" settings page) is still future work; this is a
-  smaller, explicitly-scoped-down step, same simplification precedent as `ToolContext.actor`
-  existing well before anything checked it.
+- **No scope or spend-cap enforcement — by design, not planned.**
+  `oauthMetadata.scopes_supported` is one blanket `"store:agent"` scope, so every tool is
+  available to any connected agent. Root `claude.md`'s fuller "Intent Mandate" design (`scope`,
+  `spend_cap`, an "Agent Access" settings page) was designed and deliberately not built. See
+  "Where the human is in the loop" below for what that means in practice.
+
+### Where the human is in the loop
+
+> An OAuth-connected MCP agent can call `prepare_order` → `place_order` in one turn, and can call
+> `start_reserve_pay_setup` to create a **new** block up to ₹10,000. The human's consent is the
+> one-time OAuth approval plus the UPI PIN on the block — not a per-order confirmation. There is
+> no scope, no spend cap, and no per-agent limit; the ₹10,000 regulatory ceiling and the block's
+> remaining balance are the only bounds. This is deliberate, and it is the opposite of the
+> first-party chat agent, where `place_order` is never in the model's tool list at all
+> (`chatService.ts:261`). Accepted knowingly: agentic checkout is the product.
+
+What still holds on both surfaces: every action is scoped to one user's data, every money-moving
+call writes an audit row naming the actor, and the cart mandate records exactly what was agreed.
+Two consequences of this decision are tracked in `issues.md` rather than dropped — an MCP client
+needs the structured tool error (`S16`) and honest tool annotations (`A8`) to decide whether a
+retry is safe, and both matter more now than when `place_order` was chat-only.
 
 ### Connecting to Claude Desktop (or any remote MCP client)
 
@@ -256,8 +291,9 @@ Other things worth knowing before you debug the wrong thing:
   — which is what the SDK serves. Clients probe the bare path as a fallback; ignore it.
 - **`CORS_ORIGIN` does not affect discovery.** The SDK sets `Access-Control-Allow-Origin: *` on
   both metadata documents itself. It would only matter for a browser-side client.
-- Connecting a real agent makes `proposal.md` **S1** live rather than theoretical: MCP exposes
-  every tool, `place_order` and `start_reserve_pay_setup` included, with no scope or spend cap.
+- Connecting a real agent makes the accepted risk above concrete rather than theoretical: MCP
+  exposes every tool, `place_order` and `start_reserve_pay_setup` included, with no scope or
+  spend cap. That is intended — just know it before you point a live agent at it.
 
 ---
 
@@ -278,9 +314,9 @@ Other things worth knowing before you debug the wrong thing:
   silently: the `catch` branch simply never matches and a handled constraint violation escapes
   as a 500. It had already broken the archive-instead-of-delete fallback, the "category still
   has products" 409, and the webhook/verify checkout idempotency guard.
-- **Zod schemas are the single source of truth** for both runtime validation and (via
-  zod-to-json-schema or similar) the parameter schemas exposed to agents through A2A/MCP tool
-  definitions. Don't hand-write a separate JSON schema for a tool that already has a Zod schema.
+- **Zod schemas are the single source of truth** for both runtime validation and (via zod-4's
+  `z.toJSONSchema`) the parameter schemas exposed to agents through the MCP tool definitions.
+  Don't hand-write a separate JSON schema for a tool that already has a Zod schema.
 - **`/config` validates env at boot**, not lazily inside whatever service first needs a given
   key — a missing `RAZORPAY_KEY_SECRET` should crash startup, not surface as a mysterious 500
   three requests in.

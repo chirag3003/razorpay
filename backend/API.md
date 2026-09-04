@@ -5,10 +5,14 @@ agent) can wire up `web/` — or any other client — **without reading backend 
 here ever disagrees with the code, the code wins; but if you find a mismatch, fix this file in the
 same change.
 
-Out of scope / not built yet: agent tokens, mandates, Reserve Pay, A2A/MCP. Everything below is
-plain REST — session-auth for the human storefront (§2–§6.9), plus a password-gated admin
-surface for a merchant dashboard (§6.10). See `backend/CLAUDE.md` if you're changing backend
-code, not just calling it.
+**What's here:** plain REST for the human storefront (§2–§6.9), a password-gated admin surface
+(§6.10), the UPI Reserve Pay rail (§6.11), the shared agent tool registry and the storefront chat
+agent (§6.12–§6.13), and the MCP server plus its OAuth flow (§6.14–§6.15) that lets an
+independent agent transact. **§7 lists what is deliberately absent** — read it before assuming a
+feature exists.
+
+See `backend/CLAUDE.md` if you're changing backend code rather than calling it, `backend/issues.md`
+for the open work queue, and `handled.md` (repo root) for how failures are expected to behave.
 
 ---
 
@@ -598,13 +602,26 @@ Read-only. Query: `q` (substring on name or email), `page` (1), `pageSize` (max 
 
 ### 6.11 UPI Reserve Pay (SBMD)
 
-> **Blocked on Razorpay account activation.** Every endpoint below is implemented, but
-> `/v1/payments/create/json` (Razorpay's server-to-server payment API) is **not enabled on this
-> test account** — it answers `400 BAD_REQUEST_ERROR "The requested URL was not found on the
-> server."` for *any* payment, recurring or not. Creating the SBMD authorisation order already
-> works, so the blocker is one support request: ask Razorpay to enable the S2S JSON API, UPI
-> Reserve Pay (SBMD), and `save_vpa` on the account. Until then `POST /api/reserve-pay/mandates`
-> returns `502 PAYMENT_GATEWAY_ERROR`.
+> **Blocked on Razorpay account activation — and served by a simulator meanwhile.** Every
+> endpoint below is implemented, but `/v1/payments/create/json` (Razorpay's server-to-server
+> payment API) is **not enabled on this test account** — it answers
+> `400 BAD_REQUEST_ERROR "The requested URL was not found on the server."` for *any* payment,
+> recurring or not. Creating the SBMD authorisation order already works, so the blocker is one
+> support request: ask Razorpay to enable the S2S JSON API and `save_vpa` on the account.
+>
+> **Run with `RESERVE_PAY_SIM=true` and the whole rail works end to end** — every endpoint below
+> behaves exactly as documented. `services/reservePayGateway.ts` picks the real gateway or the
+> local simulator from that one flag, and every guard, reservation, audit write and status
+> mapping in `reservePayService` runs identically either way. Signatures are real on both sides:
+> simulated debits are HMAC-signed with `RAZORPAY_KEY_SECRET` and replayed webhooks with
+> `RAZORPAY_WEBHOOK_SECRET`, so `verifyPaymentSignature` and `verifyWebhookSignature` genuinely
+> pass. Simulated ids all carry a `_sim_` segment. Boot refuses the flag against an `rzp_live_`
+> key. Extra controls at `/api/reserve-pay/sim/*` (approve now, arm a decline, drive the token
+> status, read state) exist **only** in that mode. Details in `backend/issues.md`.
+>
+> With the flag off and no entitlement, `POST /api/reserve-pay/mandates` returns
+> `502 PAYMENT_GATEWAY_ERROR` carrying Razorpay's description verbatim, and the mandate row lands
+> in `failed` rather than being orphaned as `pending`, so the one-live-mandate slot is released.
 
 **What this is.** Reserve Pay blocks a customer's funds once, against a single UPI PIN approval,
 and lets the merchant debit that block repeatedly with no further customer interaction. That
@@ -720,8 +737,8 @@ polling.
 
 **This is not a REST surface.** It's an in-process TypeScript registry at
 `src/agent-interfaces/tools/`, imported and called directly by the AI layer. It is documented here
-because it is the contract the chat agent codes against, and because §6.14's MCP adapter exposes
-exactly these tools unchanged (a future A2A adapter will too, when it lands).
+because it is the contract the chat agent codes against, and because §6.14's MCP server exposes
+exactly these tools unchanged.
 
 **Why it exists.** The REST endpoints above assume a browser holding a session JWT and return
 shapes a React page renders — a single catalog page is ~2,200 tokens, most of it placeholder image
@@ -744,8 +761,8 @@ const result = await runTool(ctx, "search_products", { q: "milk" });
 
 **Authentication happens above this layer.** The caller resolves the session and passes `userId`;
 tools trust it exactly as a route handler trusts `c.get("userId")` after `requireAuth`. Agent
-tokens with scopes and spend caps are the next phase and slot into `ctx.actor` without changing
-any tool.
+tokens carry no scopes and no spend caps, and none are planned — see §6.15's "Where the human is
+in the loop".
 
 `toAnthropicTools()` returns `{name, description, input_schema}` generated from each tool's Zod
 schema via zod-4's `z.toJSONSchema`; `toMcpTools()` returns the same with `inputSchema`.
@@ -813,14 +830,18 @@ buys three things:
 Only one quote is open per customer at a time — calling `prepare_order` again supersedes the
 previous one. Quotes expire after 15 minutes.
 
-**Known limitation:** `place_order` delegates to `orderService.checkoutWithReservePay`, which
-re-derives its snapshot from the live cart at charge time. The fingerprint check runs immediately
-before the charge, so the window is sub-millisecond and same-customer-only, but a cart mutated
-inside it would be charged at its new total. Any divergence is recorded in the audit row
-(`quotedTotal` vs `chargedTotal`).
+**Known limitation, scheduled for fix:** `place_order` delegates to
+`orderService.checkoutWithReservePay`, which re-derives its snapshot from the live cart at charge
+time rather than charging the quoted total, and does not pass the quote's `mandateId` down. The
+fingerprint check runs immediately before the charge, so the window is sub-millisecond and
+same-customer-only, but a cart mutated inside it would be charged at its new total. Any divergence
+is recorded in the audit row (`quotedTotal` vs `chargedTotal`) and currently allowed. Tracked as
+`S14`/`S15` in `backend/issues.md`.
 
-**Reserve Pay is blocked on account activation** (see §6.11), so `start_reserve_pay_setup` and
-`place_order` return `payment_gateway_unavailable` today. Everything else works.
+**Reserve Pay needs `RESERVE_PAY_SIM=true`** unless the account has been entitled (see §6.11).
+Without either, `start_reserve_pay_setup` and `place_order` return
+`payment_gateway_unavailable` — which is itself worth demoing, since the agent surfaces it as an
+explained failure rather than a crash.
 
 ---
 
@@ -950,27 +971,13 @@ billed immediately, and nothing from the partial turn is persisted.
 primary costs no extra round trip. There is no LangChain-style provider abstraction because
 OpenRouter already is one.
 
-#### What the frontend still has to do
+#### Frontend status
 
-The backend is complete; `web/` has not been touched.
-
-1. **Implement `createSseTransport()`** in `web/lib/chat/transport.ts` and return it from
-   `getChatTransport()`. POST to `/api/chat` with the bearer token, read `text/event-stream`,
-   `JSON.parse` each `data:` frame, yield as `ServerEvent`. The store and every widget already
-   speak this — nothing else changes.
-2. **`ChatRequest.token` is vestigial.** Auth is the `Authorization` header. Keep sending the
-   field or drop it.
-3. **Re-read the cart when a `cart_summary` part arrives.** The agent now mutates the *server*
-   cart through `add_to_cart`, so the Zustand store must refresh. No protocol change needed —
-   `cart_summary` is already `live` lifecycle.
-4. **`buildClientState` should stop calling `mock-reserve-pay`** (`client-state.ts:44`). Cosmetic
-   only: the backend ignores `clientState.mandate` and uses server truth.
-5. **`web/lib/chat/mock-*.ts` (~870 lines) can be deleted** once the SSE transport lands.
-
-**Reserve Pay is still blocked on account activation** (§6.11), so `start_reserve_pay_setup` and
-the debit inside `place_order` return `payment_gateway_unavailable`. That surfaces as an `error`
-part with `code: "bank_not_available"`, which `web/components/chat/widgets/error-widget.tsx`
-already renders. Everything else in the chat flow works today.
+Fully integrated. `web/lib/chat/sse-transport.ts` implements the transport, the mock scripts are
+deleted, and the storefront re-reads its cart when a `cart_summary` part arrives. The one thing to
+remember when changing a part type: `CHAT_PROTOCOL_VERSION` (now **4**) guards the *request*, not
+parts already persisted in `chat_messages.parts` or the client's `sessionStorage` — see
+`backend/issues.md`.
 
 ---
 
@@ -987,7 +994,7 @@ needed on either side for most of them. A2A instead sends one free-text instruct
 there's no structured-args call in A2A's wire protocol at all, so *every* A2A call would need this
 backend's LLM just to parse intent. That's a fundamentally different shape, and MCP is the one
 that matches "most tool calls need no AI, only search benefits from one" — see `search_products_nl`
-below. A2A remains a planned later phase wrapping the same §6.12 registry.
+below. A2A is **not planned**; MCP is the agent interface.
 
 **Auth:** `Authorization: Bearer <token>` — but this token is an **OAuth access token from §6.15's
 flow, never a copy-pasted human session JWT**. A human `/api/auth/login` token gets `401` here
@@ -1055,38 +1062,83 @@ agent access token (`{sub, actorType: "agent", exp}`) both sign with `JWT_SECRET
 verification path rejects the other's shape — a leaked agent token cannot be replayed against any
 human route, and vice versa.
 
-**No scope or spend-cap enforcement yet.** Every connected agent gets one blanket `store:agent`
-scope covering the whole tool registry, same access the chat agent has. Root `claude.md`'s fuller
-"Intent Mandate" design (per-agent `scope`, `spend_cap`, tied to a Reserve Pay authorisation) is
-still future work — this is a smaller, explicitly-scoped-down step.
+#### Where the human is in the loop
+
+Every connected agent gets one blanket `store:agent` scope covering the whole tool registry. This
+is deliberate, and it is the sharpest thing to understand about this API:
+
+> An OAuth-connected MCP agent can call `prepare_order` → `place_order` in one turn, and can call
+> `start_reserve_pay_setup` to create a **new** block up to ₹10,000. The human's consent is the
+> one-time OAuth approval plus the UPI PIN on the block — not a per-order confirmation. There is
+> no scope, no spend cap, and no per-agent limit; the ₹10,000 regulatory ceiling and the block's
+> remaining balance are the only bounds. This is deliberate, and it is the opposite of the
+> first-party chat agent, where `place_order` is never in the model's tool list at all
+> (`chatService.ts:261`). Accepted knowingly: agentic checkout is the product.
+
+What still holds: every tool call is scoped to one user's data (an agent token for user A cannot
+read or act on user B's cart, orders or addresses), every money-moving call writes an `audit_log`
+row naming the actor, and the signed cart mandate records exactly what was agreed. What does not
+hold is per-action authorization.
+
+Root `claude.md`'s fuller "Intent Mandate" design (per-agent `scope`, `spend_cap`, an "Agent
+Access" settings page) was designed and deliberately **not built** — see §7.
 
 ---
 
 ## 7. Things intentionally not built (don't assume these exist)
 
-- No password reset / email verification / OAuth — signup+login only.
-- No coupons/discounts — `discount` is always `0`.
+Split into two lists: things that were **descoped by decision** and will not be built, and
+smaller gaps that are simply not there yet. Neither is a backlog — `backend/issues.md` is the
+backlog.
+
+### Descoped by decision — do not plan work against these
+
+- **No Recovery Agent.** There is no payment-failure classifier, retry policy, stopping rule or
+  customer-messaging path anywhere in the backend. `webhooks/razorpay.ts` handles `payment.failed`
+  by clearing the pending checkout and writing an audit row, and nothing more.
+- **No A2A transport.** MCP is the agent interface (§6.14). A2A sends one free-text instruction
+  per "skill" with no structured-args call in its wire protocol, so *every* A2A call would need
+  this backend's LLM just to parse intent — a fundamentally different shape from "typed structured
+  tool calls, no LLM needed."
+- **No agent-token scope or spend-cap enforcement.** `POST /api/mcp` (§6.14) is real OAuth
+  (§6.15) with a real, distinct agent access token — but every connected agent gets one blanket
+  `store:agent` scope covering the whole tool registry, `place_order` and
+  `start_reserve_pay_setup` included. Root `claude.md`'s fuller "Intent Mandate" design (per-agent
+  `scope`, `spend_cap`, an "Agent Access" settings page) was designed and deliberately not built.
+  §6.15's "Where the human is in the loop" states the accepted risk in full.
+- **No connected-agents view and no agent revocation.** `oauth_refresh_tokens` has the data (one
+  row per connected client) but no endpoint exposes it. Access tokens are stateless 24h JWTs with
+  no `jti` and no denylist, so revoking a refresh token does not stop a live access token.
+- **No upsell / cross-sell tooling** beyond `list_related_products`.
+- **No customer order cancellation and no refunds** — anywhere, for anyone. Agents cannot modify
+  orders either: §6.12's order tools are read-only, and there is no refund code in the backend.
+- **No logout that revokes.** Logging out clears client state; the 7-day session JWT stays valid
+  until it expires.
+- **No wishlist and no coupons/discounts** — `discount` is always `0`, and the storefront's
+  wishlist and promo-code UI are being removed rather than backed by an API.
+- **No stock quantities.** `products.inStock` is a boolean; nothing decrements on purchase, so
+  "only 3 left" is not expressible and overselling is not prevented.
+- **No order-status transition rules.** An admin can move an order between any two statuses;
+  cancelling issues no refund.
+- **No test suite.** Verification is `bun x tsc --noEmit` plus the manual money-path walkthrough
+  in `backend/issues.md`.
+
+### Not built yet (smaller gaps, no decision taken against them)
+
+- No password reset or email verification — **password reset is in progress**, tracked in
+  `backend/issues.md` P2; this line goes away when §6.3b lands.
 - No multi-address "ship to" selection beyond picking one saved address at checkout time.
 - No server-enforced single default address (see §6.6 note).
 - No true cash-on-delivery bypass of Razorpay (see §6.8 note on `paymentMethod: "cod"`).
-- **Admin surface (§6.10) is intentionally minimal:** one shared password, no per-admin
-  accounts or roles/RBAC, no order-status transition rules, no editing/deleting users, no
-  audit-log read endpoint, no CSV/export, no login rate-limiting. Customer-facing order
-  tracking is still not exposed (`status` changes are admin-only and not surfaced to the buyer).
-- No A2A transport. MCP shipped first (§6.14) since it matches "typed structured tool calls, no
-  LLM needed" — A2A's free-text "skill" shape would need this backend's LLM to parse every call,
-  not just search. A2A is a planned later phase wrapping the same tool registry unchanged.
-- The chat agent has **no upsell tooling beyond `list_related_products`**, no conversation list
-  endpoint, no title editing, and no way to delete a conversation.
-- No agent-token scope or spend-cap enforcement. `POST /api/mcp` (§6.14) is real OAuth
-  (§6.15) with a real, distinct agent access token now — but every connected agent gets one
-  blanket scope covering the whole tool registry, the same access the chat agent has. Root
-  `claude.md`'s fuller "Intent Mandate" design (per-agent `scope`, `spend_cap`, tied to a Reserve
-  Pay authorisation) is still future work.
-- Agents cannot modify orders. No cancel, no refund, no status change — §6.12's order tools are
-  read-only, and there is no refund code anywhere in the backend.
-- No stock quantities. `products.inStock` is a boolean; nothing decrements on purchase, so
-  "only 3 left" is not expressible and overselling is not prevented.
-- **Reserve Pay is blocked on account activation.** See the note at the top of §6.11 — the code
-  is complete but `/v1/payments/create/json` is not enabled on the test account, so no mandate
-  can be authorised yet.
+- **The admin surface (§6.10) is intentionally minimal:** one shared password, no per-admin
+  accounts or roles/RBAC, no editing/deleting users, no audit-log read endpoint, no CSV/export.
+  Because the password is shared, `audit_log` cannot attribute an admin action to a specific
+  person — every admin row carries `actorId: "admin"`. Customer-facing order tracking is not
+  exposed (`status` changes are admin-only and not surfaced to the buyer).
+- The chat agent has no conversation-list endpoint, no title editing, and no way to delete a
+  conversation.
+- **No rate limiting on any route**, admin login included. Scheduled — `backend/issues.md` P0.
+- **Reserve Pay needs `RESERVE_PAY_SIM=true`** on this account. See the note at the top of §6.11:
+  the code is complete and the rail is fully demoable through the simulator, but
+  `/v1/payments/create/json` is not entitled, so no mandate can be authorised against the real
+  gateway yet.

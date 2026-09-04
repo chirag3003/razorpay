@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# web
 
-## Getting Started
+The customer-facing storefront, the merchant admin dashboard, and the chat panel — one Next.js
+app (Next 16, React 19, Tailwind v4, shadcn/base-ui, zustand).
 
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+app/(shop)          storefront: home, catalog, product detail, cart, checkout, orders, account
+app/admin           operator dashboard: products, categories, orders, users
+app/agent-connect   the OAuth consent screen an external agent sends the customer to
+app/approve/[token] the standalone UPI Reserve Pay approval page (deliberately unauthenticated)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Running it
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+bun install
+cp .env.example .env.local     # NEXT_PUBLIC_API_BASE_URL=http://localhost:4000
+bun run dev                    # http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+**The backend must be running.** This app holds no data of its own — every page fetches from
+`/backend` through `lib/api/`, and with the API down you get the error states rather than a
+catalog. Start it first (`cd ../backend && bun run dev`), and run it with
+`RESERVE_PAY_SIM=true` if you want the Reserve Pay and agent-checkout flows to work end to end.
 
-## Learn More
+`bun run lint` and `bun x tsc --noEmit` both pass clean; keep them that way.
 
-To learn more about Next.js, take a look at the following resources:
+## Where to look
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **`../backend/API.md`** — the full request/response contract. Read this before adding an API
+  call; it documents every route, entity shape and error code, so you never need to read backend
+  source to integrate.
+- **`AGENTS.md`** — the conventions in this project: the server/client component split, the single
+  fetch path, store rules, and the chat protocol's versioning contract. Read it before writing
+  code here.
+- **`issues.md`** — the work queue: open bugs, what is being removed, and what is explicitly out
+  of scope.
+- **`../handled.md`** — what already fails gracefully across the whole system. Read it before
+  adding a new error path.

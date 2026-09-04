@@ -1,12 +1,12 @@
-# Project: Razorpay Hackathon — Agentic Commerce & Revenue Recovery
+# Project: Razorpay Hackathon — Agentic Commerce
 
 ## What We're Building
 
-We're building a working, end-to-end simulated e-commerce merchant — think a Swiggy/Zomato-style
-food/grocery delivery platform — that is fully usable by normal human customers through a real
-website, and *also* fully transactable by independent AI agents (a self-hosted OpenClaw, a custom
-"Jarvis," or any other third-party agent framework) with zero special integration required beyond
-a merchant-issued token and a public protocol interface.
+A working, end-to-end simulated e-commerce merchant — think a Swiggy/Zomato-style food/grocery
+delivery platform — that is fully usable by normal human customers through a real website, and
+*also* fully transactable by independent AI agents (a self-hosted OpenClaw, a custom "Jarvis," or
+any other third-party agent framework) with zero special integration required beyond an OAuth
+connection.
 
 The system has three layers, built in this order:
 
@@ -15,65 +15,58 @@ The system has three layers, built in this order:
    real (simulated-money) transactions. This is the foundation everything else sits on, not a
    throwaway prototype layer.
 
-2. **Two merchant-side agents, sharing that same store's underlying logic:**
-   - **Growth/Checkout Agent** — lets a customer (human, via chat, or an external AI agent, via
-     protocol) complete a purchase conversationally instead of clicking through pages, with
-     upsell/cross-sell suggestions along the way. This is what proves "an AI buyer can transact
-     with this merchant end to end."
-   - **Recovery Agent** — watches for payment failures (card declines, failed subscription
-     debits, abandoned checkouts) on the same store, diagnoses *why* each one failed, and
-     executes a bounded, auditable recovery action (retry, prompt, or give up per a stopping
-     rule). Pitched as "recovering revenue that would otherwise be lost," not as a separate
-     product.
+2. **A merchant-side Growth/Checkout Agent**, sharing that same store's underlying logic — it
+   lets a customer complete a purchase conversationally instead of clicking through pages, either
+   as a human in the storefront chat panel or as an external AI agent over the public MCP
+   interface. This is what proves "an AI buyer can transact with this merchant end to end."
 
 3. **A buyer-side reference AI assistant**, built as a genuinely separate codebase, that connects
-   to the merchant purely through its public protocol interface (see Protocol Layering below) —
-   this is the live proof that *any* independent agent, not just something we built and control,
-   can browse the catalog and complete a real purchase.
+   to the merchant purely through its public MCP interface — the live proof that *any* independent
+   agent, not just something we built and control, can browse the catalog and complete a real
+   purchase.
 
 The hard problem this project is actually solving is trust and authorization between two mutually
 independent parties (a merchant that doesn't control the buyer's agent, and a buyer's agent that
 the merchant has never seen before) — not just "make a chatbot that can check out." Every
-architectural choice below (the mandate/token system, UPI Reserve Pay for instant repeat debits,
-keeping the transaction core LLM-free, A2A/MCP as the interface) exists to make that trust
-relationship real, bounded, and auditable rather than assumed.
+architectural choice below (OAuth-issued agent tokens, the cart mandate, UPI Reserve Pay for
+instant repeat debits, keeping the transaction core LLM-free) exists to make that trust
+relationship real, bounded and auditable rather than assumed.
 
 ## Submission Track
-Track 1 (AI Growth & Agentic Commerce). Track 3 (Revenue Recovery) concepts are included as a
-second agent, framed entirely as revenue growth — never pitch or benchmark it against Track 3's
-own rubric.
+Track 1 (AI Growth & Agentic Commerce).
 
 ## One-line narrative
-An agent suite that grows a merchant's revenue two ways — capturing new demand (Growth/Checkout
-Agent) and recovering demand that's slipping away (Recovery Agent) — both explainable, bounded,
-gated, and fully audited, and both transactable by *any* external buyer agent, not only one we
-built ourselves.
+An agent suite that grows a merchant's revenue by capturing new demand conversationally —
+explainable, audited, and transactable by *any* external buyer agent, not only one we built
+ourselves.
 
 ---
 
 ## Hard Rules — do not violate these regardless of what a task seems to ask for
 
-1. **No LLM in the merchant transaction core.** Catalog lookup, cart mutation, token/mandate
-   verification, and the Reserve Pay debit call must be deterministic, auditable code. LLMs are
-   only allowed in: Growth Agent upsell/cross-sell suggestion generation (advisory data only,
-   never itself mutates a cart), Recovery Agent failure-explanation/messaging (root-cause
-   classification itself stays rule-based), offline/batch catalog authoring, and the merchant
-   admin dashboard assistant. If unsure whether new logic belongs in the deterministic core, ask
-   before adding a model call to it.
+1. **No LLM in the merchant transaction core.** Catalog lookup, cart mutation, mandate
+   verification and the Reserve Pay debit call must be deterministic, auditable code. LLMs are
+   only allowed in: the storefront chat agent's conversation loop, natural-language search
+   assistance (advisory only — it produces filters, it never mutates state), and offline/batch
+   catalog authoring. If unsure whether new logic belongs in the deterministic core, ask before
+   adding a model call to it. This is structurally checkable, not just a written rule: only
+   `chatService.ts` and `searchAssistService.ts` may import `/llm`.
 2. **One service layer, two callers.** All order/cart/payment logic lives in
-   `/backend/src/services/`. Both the normal web REST routes and the agent-facing
-   A2A/MCP tool handlers must call into this same layer — never duplicate business logic in a
-   route handler or a tool handler directly.
+   `/backend/src/services/`. Both the normal web REST routes and the agent-facing MCP tool
+   handlers must call into this same layer — never duplicate business logic in a route handler or
+   a tool handler directly.
 3. **Merchant service and buyer-side agent share zero code.** The buyer-side assistant is a
-   structurally separate codebase/process. It may only know the merchant's public A2A/MCP
-   endpoint and a bearer token — no shared imports, no internal shortcuts. This is what makes the
-   "any independent agent can transact with our merchant" claim demonstrated, not just asserted.
+   structurally separate codebase/process. It may only know the merchant's public MCP endpoint and
+   an OAuth token — no shared imports, no internal shortcuts. This is what makes the "any
+   independent agent can transact with our merchant" claim demonstrated, not just asserted.
 4. **Every money-moving action must be logged to the audit trail** (`audit_log` table) with:
-   actor (which token/agent), the mandate/scope checked, the decision, and the outcome. If a new
+   actor (which token/agent), the mandate checked, the decision, and the outcome. If a new
    endpoint moves money and doesn't write an audit row, it's incomplete.
-5. **Discovery is open; transacting is not.** Catalog browsing/search requires no token. Cart
-   creation, checkout, and any Reserve Pay action require a valid, unexpired, unrevoked token
-   whose scope covers the action.
+5. **Discovery is open; transacting is not.** Catalog browsing and search require no token. Cart
+   mutation, checkout and any Reserve Pay action require a valid, unexpired token. Note what this
+   does *not* say: there is **one blanket `store:agent` scope**, so a valid token covers every
+   action. Per-action scoping and spend caps were designed and deliberately not built — see
+   "Where the human is in the loop" below.
 
 ---
 
@@ -81,46 +74,90 @@ built ourselves.
 
 ```
 /web            Next.js — customer-facing store UI + chat, and merchant admin dashboard
-/backend        Node/TypeScript — service layer, REST routes, A2A/MCP interfaces, webhook receiver
-/buyer-agent    TBD — see "Buyer-Side Assistant" section below, not finalized yet
+/backend        Node/TypeScript — service layer, REST routes, MCP interface, webhook receiver
+/buyer-agent    Independent buyer-side assistant (separate process, no shared code)
+handled.md      What already fails gracefully, across all three — read before adding an error path
 ```
+
+Each project keeps its own `issues.md` as its work queue. `backend/API.md` is the full
+request/response contract and is the file to read before integrating against the backend.
 
 ---
 
 ## Tech Stack
 
 - **Dashboards & storefront:** Next.js (single app, routes for storefront + `/admin`)
-- **Backend:** Node/TypeScript, official Razorpay SDK
-- **Database:** Postgres
+- **Backend:** Bun + Hono + TypeScript, official Razorpay SDK
+- **Database:** Postgres (Drizzle)
 - **Webhook receiver:** built into backend, tunneled via ngrok for local dev
-- **LLM:** OpenRouter (`@openrouter/sdk`), model set by `OPENROUTER_MODEL`; used only in the locations listed in Hard Rule #1
-- **Payment rail:** Razorpay test-mode APIs — Orders, Payments, Payment Links, Subscriptions/
-  Autopay, UPI Reserve Pay (SBMD)
+- **LLM:** OpenRouter (`@openrouter/sdk`), model set by `OPENROUTER_MODEL`; used only in the
+  locations listed in Hard Rule #1
+- **Payment rail:** Razorpay test-mode APIs — Orders, Payments, UPI Reserve Pay (SBMD)
 
 ---
 
 ## Payment / Mandate Architecture
 
-- **Intent Mandate (simplified):** an opaque bearer token generated by the user in an
-  "Agent Access" settings page. Fields: `token_id, user_id, scope, spend_cap, reserve_pay_token_id,
-  expiry, revoked`. Generating it also completes the real UPI Reserve Pay authorisation (one
-  human UPI-app approval), linking the token to actual blocked funds.
-- **Cart Mandate (lightweight):** at checkout, before the Reserve Pay debit, generate and store a
-  signed record `{cart_contents, total_amount, token_id, timestamp}` — the per-transaction proof
-  of what was actually agreed to, separate from the token's general authority.
+- **Agent access token:** issued only by the OAuth flow (`backend/API.md` §6.15), never handed to
+  a human to copy-paste. A JWT with `actorType: "agent"` and a 24-hour TTL, mutually exclusive
+  with the human session token even though both sign with the same secret.
+- **Reserve Pay mandate:** the standing authority. Generating it completes a real UPI Reserve Pay
+  authorisation (one human UPI-app PIN approval), blocking actual funds that later debits draw
+  against.
+- **Cart Mandate:** at checkout, before the debit, a signed record
+  `{cart_contents, total_amount, timestamp}` is written — the per-transaction proof of what was
+  actually agreed, separate from the token's general authority. It is what makes `place_order`
+  idempotent and what invalidates a quote whose cart moved underneath it.
 - **Payment Mandate:** the Reserve Pay debit call itself.
 - Full AP2 (W3C Verifiable Credentials, 3-party cryptographic chain) is explicitly NOT
-  implemented — this is a deliberate, documented simplification, not an oversight.
+  implemented — a deliberate, documented simplification, not an oversight.
 - **UPI Reserve Pay (SBMD) flow:** Create Customer → Create Order
   (`token.type: single_block_multiple_debit`, `max_amount ≤ ₹10,000`, `expire_at ≤ 90 days`) →
   Create Authorisation Payment (`upi.flow: intent`, one human approval) → Fetch Token → every
   subsequent purchase is a new Order (no `notification` object) + Initiate Payment referencing
   the stored token — instant, headless.
-- **Constraint to respect:** one Reserve Pay block per merchant per customer (real regulatory
-  limit). In this prototype, simulate multiple "merchants" as multiple tokens for the same
-  customer within our one Razorpay test account.
-- **Verification order on every agent request:** token valid/unexpired/unrevoked → action within
-  scope/cap → (if payment) Reserve Pay balance check.
+- **Constraint to respect:** one Reserve Pay block per merchant per customer (a real regulatory
+  limit), enforced by a partial unique index rather than only in application code.
+- **Verification order on every agent request:** token valid/unexpired → mandate active and
+  unexpired → amount within the per-transaction cap → sufficient blocked balance. Don't reorder or
+  short-circuit this.
+
+**The rail is currently served by a local simulator** because Razorpay has not provisioned the
+server-to-server payment API on this account. Every guard, reservation, audit write and signature
+check is real either way — see `backend/issues.md` for the entitlement detail and the switch-back.
+
+---
+
+## Where the human is in the loop
+
+The honest version of the trust story, because the two agent surfaces answer it differently and
+conflating them is the easiest mistake to make in this codebase.
+
+**The first-party chat agent is gated structurally.** `place_order` is never in the tool list sent
+to the model — not withheld-unless-confirmed, never present at all (`chatService.ts:261`). On a
+`review.confirm` widget tap, `chatService` resolves the customer's one open quote itself and calls
+the tool directly, with no model round trip in the decision. The widget action carries no
+`quoteId`, so there was never a decision for a model to make. A prompt injection hidden in a
+product name, a hallucinated call, a retry storm: none can place an order, because there is
+nothing to call.
+
+**The MCP surface is deliberately open:**
+
+> An OAuth-connected MCP agent can call `prepare_order` → `place_order` in one turn, and can call
+> `start_reserve_pay_setup` to create a **new** block up to ₹10,000. The human's consent is the
+> one-time OAuth approval plus the UPI PIN on the block — not a per-order confirmation. There is
+> no scope, no spend cap, and no per-agent limit; the ₹10,000 regulatory ceiling and the block's
+> remaining balance are the only bounds. This is deliberate, and it is the opposite of the
+> first-party chat agent, where `place_order` is never in the model's tool list at all
+> (`chatService.ts:261`). Accepted knowingly: agentic checkout is the product.
+
+What still holds on both surfaces: every action is scoped to one user's data, every money-moving
+call writes an audit row naming the actor, the cart mandate records exactly what was agreed, and
+the block's ceiling bounds total exposure. What does not hold is per-action authorization — an
+agent the customer connected once can spend the whole block without asking again.
+
+If you add another money-moving tool, decide which of these two models it follows and write it
+down. Do not add a sentence to a system prompt and call it gated.
 
 ---
 
@@ -128,73 +165,47 @@ built ourselves.
 
 | Layer | Protocol | Role |
 |---|---|---|
-| Transaction execution (primary) | **A2A** | Agent Card + task lifecycle (submitted→working→input-required→completed) fronting the shared service layer. Chosen over MCP-as-primary to natively support realtime/async features (live offers, flash-sale pushes) without bolting on a second interface later. |
-| Compatibility layer (secondary) | **MCP (thin adapter)** | Same service layer, wrapped as MCP tools, so MCP-only agents can still transact. Build after the A2A path works. |
-| Checkout semantics (reference only, not a transport) | **ACP** | Its session lifecycle (create→update→complete) and "merchant stays merchant of record" principle shape both the A2A task structure and the MCP adapter's schemas. |
-| Narrative only | **UAP** | Not implementable — no live API exists yet. Cited in the pitch as the direction NPCI is heading, never integrated. |
+| Transaction execution | **MCP** | The interface. Agent-facing tools at `POST /api/mcp`, wrapping the same service layer the REST routes use, with OAuth (RFC 9728/8414/7591 + PKCE) for connection. |
+| Checkout semantics (reference only, not a transport) | **ACP** | Its session lifecycle (create→update→complete) and "merchant stays merchant of record" principle shape the tool registry's schemas and the two-phase `prepare_order`/`place_order` split. |
 
-**Accepted tradeoff:** A2A-as-primary costs some out-of-the-box compatibility (fewer agent
-frameworks natively speak A2A today vs. MCP) in exchange for native realtime/task support. The
-MCP adapter exists specifically to keep the "any agent can plug in" claim honest.
+**A2A was considered and not built.** MCP calls typed tools with structured JSON arguments
+(`add_to_cart({productId, qty})`) — no LLM needed on either side for most of them. A2A instead
+sends one free-text instruction per "skill"; there is no structured-args call in its wire protocol
+at all, so *every* A2A call would need this backend's LLM just to parse intent. That is a
+fundamentally different shape, and MCP is the one that matches "most tool calls need no AI, only
+search benefits from one." The reasoning is written out in `backend/API.md` §6.14.
 
----
-
-## Buyer-Side Assistant — NOT FINALIZED, decide based on remaining time
-
-Purpose: a genuinely separate reference implementation proving third-party agents (e.g. a
-self-hosted OpenClaw/Jarvis) can transact with the merchant with zero shared code.
-
-Decided so far:
-- Must be a structurally separate process/codebase (Hard Rule #3)
-- LLM reasoning (Claude API) lives here, never merchant-side
-- Talks to the merchant only via the public A2A interface (MCP adapter as fallback if
-  demonstrating MCP-only-agent compatibility)
-- Needs: credential store (token per connected merchant), merchant registry/selection logic,
-  conversation/decision loop, ideally independent Cart Mandate co-signing and its own
-  bounded-autonomy check before calling checkout
-
-Open / deliberately deferred:
-- **Language:** Go was discussed (small footprint, fast cold start, realistic story for an
-  "edge device" framing like a smart-fridge client calling out to a cloud LLM) vs. just using
-  Node/TS to match the rest of the stack for speed of development. **Not decided — revisit based
-  on days remaining and team familiarity with Go.**
-- Whether to attempt the optional stretch demo: cross-compiling the buyer-agent binary to run on
-  a physical device (e.g. a Raspberry Pi staged as a "smart fridge") — only attempt after the
-  core A2A path, dashboard, and both agents are working end to end.
+UAP is narrative only — no live API exists. Cite it as the direction NPCI is heading; never claim
+integration.
 
 ---
 
 ## Deliverables
 
-1. **Merchant Agent Service** (backend) — Growth/Checkout Agent module, Recovery Agent module,
-   shared deterministic core, shared audit-log/mandate/token data layer
-2. **Merchant Dashboard UI** (Next.js `/admin`) — audit trail, mandate chain per transaction,
-   bounded/gated actions visualized, recovery agent monitor
+1. **Merchant Agent Service** (backend) — the shared deterministic core, the tool registry both
+   agent surfaces call, and the audit-log/mandate data layer
+2. **Merchant Dashboard UI** (Next.js `/admin`) — catalog, orders, users, and the audit trail
 3. **Customer-facing storefront + chat** (Next.js) — real signup/login/browse/cart/checkout, plus
-   a first-party Claude-powered chat calling the same service layer directly
-4. **Buyer-Side AI Assistant** (reference implementation) — see above, spec not finalized
+   an LLM chat panel calling the same service layer
+4. **Buyer-Side AI Assistant** (`/buyer-agent`) — a genuinely separate process that discovers this
+   merchant's tools over MCP and transacts through them, sharing no code with it. It is
+   general-purpose by design (it drives any MCP server or A2A agent you point it at) and is
+   currently **out of active scope** — see `buyer-agent/README.md`.
 
 ---
 
-## Build Order (reflects "boring store first, intelligence layered on top")
+## Explicitly out of scope
 
-1. **Days 1-3:** Real e-commerce store — signup/login, browse, cart, standard Razorpay checkout,
-   order history. Written as a clean service layer, not logic-in-route-handlers.
-2. **Days 4-5:** Recovery Agent — webhook listener, failure classifier, policy engine, stopping
-   rules, built on real data from Phase 1.
-3. **Days 6-7:** Make the core agent-callable — schema additions (`agent_tokens,
-   reserve_pay_tokens, cart_mandates, audit_log`), UPI Reserve Pay flow, "Agent Access" settings
-   page, verification middleware.
-4. **Days 8-9:** First-party chat Growth Agent on the storefront itself (same-origin, lowest
-   trust risk, proves the concept before opening it externally). Upsell suggestions riding along
-   in tool responses.
-5. **Days 9-10:** Open it up — A2A server (Agent Card + task lifecycle) wrapping the same service
-   layer, then the thin MCP adapter.
-6. **Days 10-11:** Buyer-Side AI Assistant — build once language/scope is finalized, test as a
-   genuinely separate process against the Day 9-10 server.
-7. **Days 11-12:** Dashboard + audit trail wiring, one scripted graceful-failure case per agent,
-   optional Pi stretch demo if time allows.
-8. **Day 13:** Buffer, writeup, submission.
+Descoped by decision. Do not plan work against these, and do not re-raise them as gaps:
 
-**Cut list if time runs short (in this order):** optional Pi/edge demo → MCP adapter →
-buyer-side Cart Mandate co-signing → upsell suggestions in chat.
+- **Recovery Agent** (payment-failure diagnosis, retry policy, stopping rules) — never built, not
+  planned. `webhooks/razorpay.ts` handles `payment.failed` by clearing the pending checkout and
+  nothing more.
+- **A2A transport** — see Protocol Layering above.
+- **Upsell / cross-sell tooling** beyond `list_related_products`.
+- **Intent Mandate `scope` / `spend_cap`** and an "Agent Access" settings page.
+- **Connected-agents view and agent revocation.**
+- **Customer order cancellation and refunds**, logout token revocation, stock quantities,
+  order-status transition rules, and a test suite.
+
+`backend/API.md` §7 keeps the authoritative version of this list with the reasoning per item.

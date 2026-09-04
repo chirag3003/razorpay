@@ -1,84 +1,191 @@
-# Known gaps found while building the backend chat agent
+# Web — open issues and work queue
 
-## Compatibility: `OrderReviewPart.payment.tokenId` is no longer sent
+Verified against `main` at `dbcaabc`. Ordering is by priority, not by file.
 
-`POST /api/chat`'s `order_review` part used to carry `payment.tokenId` (the Reserve Pay mandate
-id) to satisfy `web/lib/chat/protocol.ts`'s `OrderReviewPart.payment` type, which declares it
-`required`. It is **not sent anymore**.
+The backend's own register is `backend/issues.md`; `handled.md` at the repo root lists what
+already fails gracefully on both sides — read it before adding a new error path.
 
-Why: grepping every file in `web/components/chat/widgets/` shows nothing reads it —
-`order-review-widget.tsx` only uses `part.payment.remaining`, and the two Reserve Pay widgets
-never receive an `OrderReviewPart` at all. It existed purely to fill a required field, not because
-anything consumed it. The backend now omits it rather than keep a field with zero readers.
+**Two items previously in this file are done and have been removed:** the
+`OrderReviewPart.payment.tokenId` compatibility break (`CHAT_PROTOCOL_VERSION` is now **4** on
+both sides) and the `/agent-connect` consent-page spec (the page exists at
+`app/agent-connect/page.tsx`).
 
-**To restore compatibility, in `web/`:**
+---
 
-1. `web/lib/chat/protocol.ts` — drop `tokenId` from `OrderReviewPart["payment"]`:
-   ```ts
-   // before
-   payment: { method: "reserve_pay"; tokenId: string; remaining: Rupees };
-   // after
-   payment: { method: "reserve_pay"; remaining: Rupees };
-   ```
-2. `web/lib/chat/mock-script.ts:230` — remove the now-invalid field from the mock's own
-   `order_review` construction:
-   ```ts
-   // before
-   payment: { method: "reserve_pay", tokenId: mandate.tokenId, remaining },
-   // after
-   payment: { method: "reserve_pay", remaining },
-   ```
-3. Bump `CHAT_PROTOCOL_VERSION` in `web/lib/chat/protocol.ts` from `1` to `2` once the above
-   lands, matching the bump already made on the backend side
-   (`backend/src/chat/protocol.ts`). Until this is bumped on both sides, a real `POST /api/chat`
-   call will 400 with `PROTOCOL_VERSION_MISMATCH` — deliberately, so the mismatch is loud rather
-   than shipping a field that's silently `undefined` at runtime.
+## P0 — bugs
 
-No component changes needed beyond the type — nothing renders the field today, so nothing breaks
-by its absence; this is purely bringing the type back in line with what's actually on the wire.
+### 1. Profile edits appear to save, then revert
 
-## Related, but not fixed here: `ChatMandate.tokenId` is the same story
+`PATCH /api/auth/me` **is** implemented (`backend/src/routes/auth.ts`, documented in `API.md`
+§6.3a) and `lib/api/auth.ts:updateProfile` calls it correctly. Two separate faults make it look
+broken anyway:
 
-`ChatMandate.tokenId` (the same Reserve Pay mandate id, surfaced via `get_payment_status`,
-`check_reserve_pay_status`, and `start_reserve_pay_setup`) is *also* unrendered by every widget
-that receives a `ChatMandate` — checked `reserve-pay-status-widget.tsx` and
-`reserve-pay-setup-widget.tsx` directly. This one wasn't touched, since it's a separate field on a
-separate type and wasn't part of the change that prompted this doc. Worth the same look later:
-either it's dead weight like `payment.tokenId` was, or it's scaffolding for a future "manage this
-specific reserved balance" affordance (e.g. showing which balance is active, or letting the
-customer revoke one by id) that was never built. If it's the latter, it should stay and get a
-consumer; if not, it can go the same way as `payment.tokenId`.
+- `app/(shop)/(protected)/account/page.tsx:74` awaits `updateProfile` and toasts success, but
+  **never updates `useAuthStore`**. The form is driven by `useForm({ values: user … })` (`:64`),
+  so react-hook-form resets the fields back to the stale store values on the next render — the
+  edit looks discarded, and the header still shows the old name until a reload.
+- The `catch` at `:77` hardcodes `"Profile editing isn't available yet"`, so a real failure — a
+  409 on an email already in use, or a validation error — is reported as a missing feature.
 
-## Needed: an `/agent-connect` page — the MCP OAuth consent screen
+Fix: set the returned user into the store, and surface `ApiError.message` (409 → "that email is
+already in use"). Also delete the stale comment at `lib/api/auth.ts:29-30`
+("Not implemented by the backend yet — see backend/issues.md"), which is no longer true.
 
-The backend now has a full MCP OAuth server (`backend/API.md`'s new MCP OAuth section) so a
-customer's independent agent (`buyer-agent/`, or any other MCP client) can connect without ever
-being handed a bearer token to copy-paste. The one piece that isn't backend work: the actual
-human-facing consent screen, since this backend is a pure JSON API and never renders HTML.
+### 2. An expired session has no recovery path
 
-**Flow today, stopping at the gap:**
+A 401 is only acted on inside `store/auth-store.ts:hydrateFromServer` (`:53`). Any *other* 401 —
+the 7-day JWT lapsing mid-session — surfaces as whatever toast the individual call site writes.
+The user is never logged out and never redirected, so every subsequent action fails with
+"Invalid or expired token" and there is no way out except clearing storage.
 
-1. The agent (via its MCP client's OAuth support) hits `GET /oauth/authorize` on the backend.
-2. The backend validates the request and **302-redirects the browser to
-   `${PUBLIC_APP_URL}/agent-connect?request_id=<uuid>`** — this page does not exist yet.
-3. Once it exists, it needs to:
-   - If the visitor isn't logged into the store, send them through the normal login first, then
-     back to this same URL (`request_id` and all).
-   - `GET /api/oauth/authorize/:requestId` → `{ requestId, clientName, scope }`. Render
-     `"<clientName> wants to connect to your account"` with Approve / Deny. A 404/409/410 from
-     this call means the request is unknown, already decided, or expired — show a plain "this
-     link is no longer valid" state, no retry.
-   - On the human's choice: `POST /api/oauth/authorize/decision` with the **existing session
-     JWT** (`Authorization: Bearer <token>`, same one every other authed call already uses),
-     body `{ requestId, decision: "approve" | "deny" }` → `{ redirectTo }`.
-   - `window.location.href = redirectTo` — this is the actual OAuth redirect back to the agent's
-     `redirect_uri` (with `?code=...&state=...` on approve, `?error=access_denied&state=...` on
-     deny). Don't treat it as a normal in-app navigation; it's leaving the site.
+`store/admin-auth-store.ts` already solves this for the admin surface by funnelling every API
+failure through one handler that tears the session down on 401 and leaves everything else
+retryable. Do the same for the user session, then redirect to `/login?next=<current path>` — the
+`next` parameter is already honoured by `components/product/add-to-cart-button.tsx`.
 
-No existing page or component covers this — it's new, and there's no equivalent flow anywhere
-else in the storefront to crib from (login/signup redirect to `/`, not to a third party).
+### 3. Cart quantity taps can display the wrong number
 
-**Not needed for this to work, but worth doing later:** a "connected agents" view (e.g. in
-account settings) listing active connections with a revoke button — the backend has everything
-needed for it (`oauth_refresh_tokens`, one row per connected client) but no endpoint exposes it
-yet, since revocation wasn't part of what prompted this page.
+`store/cart-store.ts:39-52` — `addItem`, `updateQty` and `removeItem` each await a full round trip
+and then overwrite `cart` with the response. There is no optimistic update, no debounce, and no
+in-flight de-duplication, so:
+
+- every `+`/`-` tap waits on the network before the number moves (the most visible latency in the
+  app), and
+- tapping quickly fires N concurrent requests whose responses can resolve **out of order**,
+  leaving the displayed quantity wrong until the next fetch.
+
+Fix both together: apply the change locally first, then reconcile with the server response, and
+either serialise mutations per item or drop responses older than the latest issued request.
+
+### 4. A successful payment can be reported as a failure
+
+`app/(shop)/(protected)/checkout/page.tsx:119` — inside Razorpay's `handler`, if `verifyCheckout`
+throws (a network blip in the moment after capture), the user gets a red
+"Payment verification failed" toast (`:130`) and is left on the checkout page. Their money is
+gone and the UI says the order did not happen.
+
+The order *is* created server-side by the `payment.captured` webhook, so the recovery exists and
+is simply not surfaced. Show a "confirming your payment" state instead and poll `GET /api/orders`
+for the order, falling back to a "we'll email you if this doesn't resolve" message rather than an
+error. Never present a post-capture failure as a plain failure.
+
+### 5. `PROTOCOL_VERSION_MISMATCH` offers a retry that cannot succeed
+
+`lib/chat/sse-transport.ts:112-125` maps every non-401/403 failure to
+`{type: "error", code: "server", retryable: true}`, so the backend's deliberate 400 on a protocol
+mismatch renders an ErrorWidget with a "Try again" button that will fail identically forever — the
+mismatch cannot self-heal client-side. Special-case the code to a non-retryable
+"reload to update the app" state. The 400 is intentional (loud rather than silently rendering
+`undefined` fields); the retry affordance is what is wrong.
+
+### 6. An out-of-range page number renders an empty grid
+
+`app/(shop)/products/page.tsx:52-53` computes `totalPages` and clamps `currentPage` **after** the
+fetch has already used the raw `page`, so `?page=999` fetches nothing and then shows pagination
+sitting on the last page with no products between. Clamp before fetching, or redirect.
+
+### 7. Paginated results can repeat or skip products
+
+Frontend symptom of a backend cause: `productService` applies no tiebreaker to any sort, so rows
+with equal sort keys come back in planner order, which is not stable across pages. Tracked as
+`L6` / P1 item 10 in `backend/issues.md`. **No frontend change needed** — listed here so it is not
+re-diagnosed as a pagination bug in this codebase.
+
+### 8. A network blip blanks the whole PDP or category page
+
+`app/(shop)/products/[slug]/page.tsx` and `categories/[slug]/page.tsx` rely on `notFoundToNull`
+(`lib/api/catalog.ts:23`), which only intercepts `ApiError` with code `NOT_FOUND`; a
+`NETWORK_ERROR` or 5xx re-throws to `app/(shop)/error.tsx` and replaces the entire page.
+
+The home page one directory over already does this correctly — `app/(shop)/page.tsx:14-17`
+catches per section, so a failing endpoint degrades that section only. Adopt the same pattern:
+the product itself still justifies the error boundary, but the related-products and category
+strips should degrade to an `ErrorState` in place.
+
+### 9. Lint warnings
+
+`bun run lint` is clean of errors but reports 9 `react-hooks/set-state-in-effect` warnings. Most
+are cosmetic (`theme-toggle.tsx`, `ui/carousel.tsx`); `hooks/use-admin-list.ts:50` is the one that
+costs a real extra render on every admin list fetch.
+
+---
+
+## P1 — feature removals
+
+### 10. Remove the wishlist completely
+
+Not "fix the wishlist" — remove it. It was never a real feature: there is no table, no API, and no
+cross-device persistence. It is `localStorage` under a fixed key with no user id in it and nothing
+clearing it on logout, so **on a shared device, logging in as a second user shows the first
+user's wishlist** — a genuine privacy problem on a shopping site. `/wishlist` also sits outside
+the `(protected)` route group, so it renders while logged out. Deleting the feature removes the
+leak; patching it would mean building the backend half.
+
+Touches: `store/wishlist-store.ts`, `app/(shop)/wishlist/page.tsx`,
+`components/product/wishlist-button.tsx`, and the entry points in
+`app/(shop)/products/[slug]/page.tsx`, `components/product/product-card.tsx`,
+`components/layout/account-menu.tsx`, `components/layout/mobile-nav.tsx` and
+`components/layout/footer.tsx`.
+
+### 11. Remove the promo-code input
+
+`app/(shop)/(protected)/cart/page.tsx:80-82` renders a styled `InputGroupInput` placeholder
+"Promo code" and an "Apply" `InputGroupButton` **with no handler at all**. The backend hardcodes
+`discount = 0` (`orderService.ts`) and coupons are explicitly out of scope, so this is UI
+promising a feature that does not exist and will not. Dead affordances are worse than absent ones.
+
+### 12. Delete the unused mock catalog
+
+`data/products.ts` and `data/categories.ts` (203 lines) are imported nowhere in `app/`,
+`components/`, `lib/` or `store/` — leftovers from before the backend was wired up. Verified with
+a repo-wide grep for `@/data/`.
+
+---
+
+## P2 — password reset UI
+
+Pairs with `backend/issues.md` P2, which adds `POST /api/auth/forgot-password` and
+`POST /api/auth/reset-password` and sends a link to `${PUBLIC_APP_URL}/reset-password?token=…`.
+
+- A "Forgot password?" link on `app/(shop)/login/page.tsx`.
+- A request page that posts the email and **always** renders the same "if that address has an
+  account, check your inbox" confirmation — the backend deliberately answers 200 either way, and
+  the UI must not undo that by branching on the response.
+- `app/(shop)/reset-password/page.tsx` reading `?token=`, posting the new password, then routing
+  to `/login`. Handle an invalid/expired token as a plain terminal state with a link to request a
+  new one, in the shape `app/approve/[token]/page.tsx` already uses for dead links.
+
+Reuse the existing form stack — `react-hook-form` + `zodResolver` with a schema in
+`lib/validation.ts`, as `signup/page.tsx` does — and `lib/api/auth.ts` for the calls.
+
+---
+
+## Known and accepted
+
+**`ChatMandate.tokenId` has no consumer.** Grepping `components/chat/widgets/` finds nothing that
+reads it — neither `reserve-pay-status-widget.tsx` nor `reserve-pay-setup-widget.tsx`. It is
+either dead weight (as `OrderReviewPart.payment.tokenId` turned out to be, and was removed) or
+scaffolding for a "manage this specific reserved balance" affordance that was never built. Left in
+place; it should get a consumer or go.
+
+**Auth tokens live in `localStorage`.** `store/auth-store.ts:78` persists `user` and `token`; the
+admin store does the same. Readable by any injected script or extension, with a 7-day TTL and no
+server-side revocation. Accepted for this project; it is also the reason every authed page is a
+client component (see `AGENTS.md`).
+
+---
+
+## Explicitly out of scope — do not implement
+
+Recorded so they are not re-discovered as findings later:
+
+- **All frontend performance work.** No `next/image` migration (14 files use raw `<img>` and
+  `next.config.ts` has no `images.remotePatterns`), no fetch `revalidate` on catalog server
+  components, no `next/dynamic` for `cmdk`/`embla`, no chat-transcript windowing, no move to
+  httpOnly cookies.
+- **Customer order cancellation** and refunds — no backend support, and none planned.
+- **Real product reviews.** The Reviews tab on the PDP restates the aggregate rating and that is
+  intentional for now.
+- **`generateMetadata` / per-page SEO.**
+- **Client-side logout revoking the token** — logout clears local state only; the JWT stays valid
+  until it expires.
