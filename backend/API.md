@@ -253,7 +253,7 @@ GET    /api/reserve-pay/mandates         auth     all mandates, newest first
 GET    /api/reserve-pay/mandates/current auth     the live mandate, or null
 GET    /api/reserve-pay/mandates/:id     auth     re-syncs from Razorpay; poll this
 POST   /api/reserve-pay/mandates/:id/revoke  auth stops further debits (local only)
-POST   /api/reserve-pay/mandates/debit   auth     test harness: debit without an order
+POST   /api/reserve-pay/mandates/debit   auth     test harness; only when RESERVE_PAY_TEST_DEBIT_ROUTE=true
 
 POST   /api/chat                         auth     SSE; the storefront chat agent
 GET    /api/chat/:conversationId         auth     rendered transcript, no model call
@@ -402,8 +402,14 @@ popup sit in between them:
 **Step 1 — `POST /api/cart/checkout/initiate`**
 Body:
 ```json
-{ "addressId": "<uuid, must belong to caller>", "deliverySlot": "Today, 4-6 PM" }
+{ "addressId": "<uuid, must belong to caller>", "deliverySlot": "Today, 4:00 PM - 6:00 PM" }
 ```
+`deliverySlot` is the human **label**, not a slot id, and it must be one the store actually
+offers — one of the six `${day}, ${time}` strings built from `DELIVERY_SLOTS` in
+`backend/src/constants.ts` (`"Today, 2:00 PM - 4:00 PM"` … `"Tomorrow, 2:00 PM - 4:00 PM"`).
+Anything else is a `400`. The agent tools take the slot **id** instead; `list_delivery_slots`
+returns both.
+
 `paymentMethod` is **optional** and defaults to `"razorpay"`. The storefront no longer collects a
 payment method up front — Razorpay Checkout asks the user which method to use. If a caller does
 send one it must be `"upi" | "card" | "netbanking" | "cod"`, and **it is stored for display only;
@@ -704,8 +710,13 @@ Charges the caller's live mandate **without creating an order**. This is a test 
 exercising the rail without a cart; real purchases go through the checkout endpoint below, which
 produces an order row for the money it moves. Returns `201` with the debit and Razorpay ids.
 
+**Not registered by default.** It moves real money for any authenticated caller and creates
+nothing to reconcile against, so it exists as a route only when `RESERVE_PAY_TEST_DEBIT_ROUTE=true`
+— the same "not registered at all in a real deployment" treatment the `/sim/*` controls get.
+Without the flag it answers `404`. Boot logs a warning if it is enabled against live keys.
+
 **`POST /api/cart/checkout/reserve-pay`** — the headless counterpart to §6.8. Body is identical
-to `/checkout/initiate`: `{ "addressId": "<uuid>", "deliverySlot": "Today, 4-6 PM" }`. Returns
+to `/checkout/initiate`: `{ "addressId": "<uuid>", "deliverySlot": "Today, 4:00 PM - 6:00 PM" }`. Returns
 `201 { order }` — the **same** `Order` shape §6.8 returns. No `keyId`, no Checkout.js, no
 signature round-trip; one call in, a finished order out.
 

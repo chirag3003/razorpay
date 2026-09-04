@@ -89,6 +89,16 @@ if (env.RESERVE_PAY_SIM) {
   );
 }
 
+if (env.RESERVE_PAY_TEST_DEBIT_ROUTE) {
+  const live = env.RAZORPAY_KEY_ID.startsWith("rzp_live_");
+  logger[live ? "warn" : "info"](
+    "boot",
+    live
+      ? "RESERVE_PAY_TEST_DEBIT_ROUTE is on with LIVE Razorpay keys — POST /api/reserve-pay/mandates/debit moves real money for any authenticated caller"
+      : "RESERVE_PAY_TEST_DEBIT_ROUTE is on — POST /api/reserve-pay/mandates/debit is registered (test harness, charges with no order)"
+  );
+}
+
 logger.info("boot", `listening on http://localhost:${env.PORT}`);
 
 // Bun's server-config export — `bun src/server.ts` starts from this, no Bun.serve() call needed.
