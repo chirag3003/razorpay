@@ -1,8 +1,16 @@
 import { z } from "zod";
+import { DELIVERY_SLOT_LABELS, isDeliverySlotLabel } from "../constants";
 
 export const initiateCheckoutSchema = z.object({
   addressId: z.uuid(),
-  deliverySlot: z.string().min(1, "Select a delivery slot"),
+  // The storefront posts the LABEL, not the slot id, so this validates against the labels
+  // deliverySlotLabel produces rather than against DELIVERY_SLOTS ids. Previously
+  // `z.string().min(1)`, which put arbitrary free text into an order a human has to fulfil.
+  deliverySlot: z
+    .string()
+    .refine(isDeliverySlotLabel, {
+      message: `Select a delivery slot. Expected one of: ${DELIVERY_SLOT_LABELS.join(" | ")}`,
+    }),
   paymentMethod: z.enum(["upi", "card", "netbanking", "cod"]).optional(),
 });
 

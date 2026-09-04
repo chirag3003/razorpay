@@ -31,9 +31,10 @@ export type OrderStatus = (typeof ORDER_STATUSES)[number];
 // Mirrors web/components/checkout/delivery-slot-picker.tsx exactly, because orders.delivery_slot
 // stores the human LABEL and an agent-placed order must be indistinguishable from a web one.
 //
-// The REST checkout schema stays `z.string().min(1)` — the storefront posts a label, so an enum
-// of ids would break it. The constraint applies at the agent tool boundary instead, where free
-// text would otherwise let an LLM write "asap" into an order a human has to fulfil.
+// Both boundaries are constrained, by different keys: the agent tools take a slot *id* (an enum in
+// agent-tool.schema.ts), while the REST checkout schema takes the *label* the storefront posts and
+// validates it with isDeliverySlotLabel below. Neither accepts free text — an order a human has to
+// fulfil should never carry "asap".
 export const DELIVERY_SLOTS = [
   { id: "today-2-4", day: "Today", time: "2:00 PM - 4:00 PM" },
   { id: "today-4-6", day: "Today", time: "4:00 PM - 6:00 PM" },
@@ -56,8 +57,18 @@ export function deliverySlotLabel(slotId: string): string | undefined {
   return slot ? `${slot.day}, ${slot.time}` : undefined;
 }
 
-// Per-line cart ceiling. cartService.addItem has no quantity validation of its own and qty is
-// additive, so an LLM looping add_to_cart could otherwise run a line to any number.
+/** Every label deliverySlotLabel can produce — the vocabulary the REST checkout accepts. */
+export const DELIVERY_SLOT_LABELS = DELIVERY_SLOTS.map(
+  (slot) => `${slot.day}, ${slot.time}`
+) as readonly string[];
+
+export function isDeliverySlotLabel(value: string): boolean {
+  return DELIVERY_SLOT_LABELS.includes(value);
+}
+
+// Per-line cart ceiling. qty is additive, so this is checked against the RESULTING line quantity
+// in cartService.addItem, not just against a single request in cart.schema.ts — otherwise a
+// caller looping add_to_cart runs a line to any number, and eventually past int4.
 export const MAX_CART_ITEM_QTY = 20;
 
 // The signed order quote from prepare_order. Short-lived: it freezes a price, and the longer it
