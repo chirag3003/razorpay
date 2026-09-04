@@ -782,11 +782,31 @@ export async function findDebitByRazorpayOrderId(razorpayOrderId: string) {
   return debit ?? null;
 }
 
+/**
+ * Which statuses a debit may be moved *out of*, per target status. This is the webhook replay
+ * guard: verifyWebhookSignature proves a body came from Razorpay but nothing stops the same signed
+ * body being redelivered, and this is the one handler that is not naturally idempotent.
+ *
+ *   created -> captured | failed   the ordinary outcomes
+ *   failed  -> captured            a real capture always wins; a `payment.failed` that arrives or
+ *                                  is replayed around a successful capture must not be the last
+ *                                  word
+ *   captured -> failed             REFUSED. This is the corruption case — a stale payment.failed
+ *                                  redelivered after capture would flip the row back and corrupt
+ *                                  the reconciliation ledger.
+ */
+const DEBIT_STATUS_TRANSITIONS = {
+  captured: ["created", "failed"],
+  failed: ["created"],
+} as const;
+
 export async function markDebitOutcome(
   debitId: string,
   outcome: { status: "captured" | "failed"; razorpayPaymentId?: string; errorCode?: string | null; errorDescription?: string | null }
 ) {
-  await db
+  const allowedFrom = DEBIT_STATUS_TRANSITIONS[outcome.status];
+
+  const updated = await db
     .update(reservePayDebits)
     .set({
       status: outcome.status,
@@ -794,7 +814,24 @@ export async function markDebitOutcome(
       errorCode: outcome.errorCode ?? null,
       errorDescription: outcome.errorDescription ?? null,
     })
-    .where(eq(reservePayDebits.id, debitId));
+    .where(
+      and(
+        eq(reservePayDebits.id, debitId),
+        inArray(reservePayDebits.status, [...allowedFrom])
+      )
+    )
+    .returning({ id: reservePayDebits.id });
+
+  // Not an error: a redelivered webhook, or executeDebit writing `captured` after the webhook
+  // already did. Logged because a refused captured -> failed is also how a genuine ordering bug
+  // would look, and there would otherwise be no trace of it.
+  if (updated.length === 0) {
+    logger.warn("reserve-pay", "debit outcome ignored — not a permitted transition", {
+      debitId,
+      to: outcome.status,
+      allowedFrom: allowedFrom.join("|"),
+    });
+  }
 }
 
 /**

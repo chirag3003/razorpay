@@ -103,6 +103,17 @@ the error is logged instead.
 payment) — and rethrows everything else, so genuine bugs still surface in the log rather than
 being silently eaten by the always-200 rule above.
 
+**Replay is safe on every branch.** `verifyWebhookSignature` proves a body came from Razorpay but
+nothing stops the same signed body being redelivered. Most handlers are naturally idempotent —
+`syncMandate` re-reads from the gateway, `confirmPayment` short-circuits on an existing order.
+`markDebitOutcome` (`services/reservePayService.ts`) is the one that was not, being an
+unconditional `UPDATE`; it is now a state machine (`DEBIT_STATUS_TRANSITIONS`) that permits
+`created -> captured|failed` and `failed -> captured` and **refuses `captured -> failed`**, so a
+stale `payment.failed` redelivered after a successful capture cannot flip the reconciliation
+ledger back. A refused transition logs a WARN and returns normally — a redelivery is not an error,
+but a refused `captured -> failed` is also what an ordering bug would look like, so it leaves a
+trace.
+
 ## 5. Agent and LLM layer
 
 **`runTool` never throws** (`agent-interfaces/tools/registry.ts:202`). A model cannot catch an
