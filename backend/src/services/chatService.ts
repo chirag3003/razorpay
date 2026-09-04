@@ -1,14 +1,15 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, count, eq } from "drizzle-orm";
 import { logger } from "../logger";
 import type { ChatMessages } from "@openrouter/sdk/models";
 import { db } from "../db";
 import { chatMessages, conversations } from "../db/schema";
-import { NotFoundError } from "../errors";
+import { ConflictError, NotFoundError } from "../errors";
 import { runTool, toOpenAITools } from "../agent-interfaces/tools/registry";
 import type { ToolContext, ToolResult } from "../agent-interfaces/tools/types";
 import { runAgentTurn } from "../llm/agentLoop";
 import { buildSystemPrompt } from "../llm/systemPrompt";
 import { buildTurnContext } from "../llm/turnContext";
+import { MAX_CONVERSATIONS_PER_USER } from "../constants";
 import * as mandateService from "./mandateService";
 import { isCollapsible, nextPartId, toolResultToPart } from "../chat/partMapper";
 import { deriveTitle, turnToUserText } from "../chat/turnInput";
@@ -39,12 +40,31 @@ const MAX_HISTORY_MESSAGES = 40;
  * An id belonging to somebody else reads as missing rather than forbidden, matching the tool
  * registry's anti-probing choice for UNAUTHORIZED/FORBIDDEN.
  */
+/**
+ * Both creation paths below are client-driven — one mints an id, the other honours the id the
+ * client sent — so a client can otherwise create conversations without bound. Cheap to check: the
+ * conversations(user_id, updated_at) index already covers it.
+ */
+async function assertConversationQuota(userId: string) {
+  const [row] = await db
+    .select({ total: count() })
+    .from(conversations)
+    .where(eq(conversations.userId, userId));
+
+  if ((row?.total ?? 0) >= MAX_CONVERSATIONS_PER_USER) {
+    throw new ConflictError(
+      `This account has reached the limit of ${MAX_CONVERSATIONS_PER_USER} conversations. Continue an existing one.`
+    );
+  }
+}
+
 export async function resolveConversation(
   userId: string,
   conversationId?: string,
   options: { createIfMissing?: boolean } = {}
 ) {
   if (!conversationId) {
+    await assertConversationQuota(userId);
     const [created] = await db.insert(conversations).values({ userId }).returning();
     if (!created) throw new Error("Failed to create conversation");
     return created;
@@ -62,6 +82,8 @@ export async function resolveConversation(
   }
 
   if (!options.createIfMissing) throw new NotFoundError("Conversation");
+
+  await assertConversationQuota(userId);
 
   const [created] = await db
     .insert(conversations)

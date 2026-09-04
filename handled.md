@@ -152,6 +152,11 @@ into a user-facing failure after the user already got what they asked for.
   (`agent-interfaces/tools/checkout.ts:63`, `remainingAfterCharge`) — returns `0` rather than
   throwing, so a failed follow-up read cannot turn a completed order into a reported failure.
 
+**Conversation creation is bounded.** `chatService.resolveConversation` accepts a client-supplied
+`conversationId` with `createIfMissing`, and also mints one when the client sends none — both are
+client-driven, so both check `MAX_CONVERSATIONS_PER_USER` first and answer
+`409 CONFLICT` rather than letting one account fill the `conversations` table.
+
 **Over-size request bodies** are refused before any handler sees them.
 `hono/body-limit` runs globally in `server.ts` at `MAX_REQUEST_BODY_BYTES` (256 KB), after the
 request logger — so an over-size request still produces one `http` log line — and answers

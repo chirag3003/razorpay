@@ -77,6 +77,11 @@ export function isDeliverySlotLabel(value: string): boolean {
 // caller looping add_to_cart runs a line to any number, and eventually past int4.
 export const MAX_CART_ITEM_QTY = 20;
 
+// Ceiling on conversations one account may hold. resolveConversation honours a client-supplied
+// conversationId with createIfMissing, so without this a client can mint unlimited rows. Far above
+// any real usage — this is an abuse bound, not a product limit.
+export const MAX_CONVERSATIONS_PER_USER = 200;
+
 // The signed order quote from prepare_order. Short-lived: it freezes a price, and the longer it
 // lives the more likely the cart behind it has moved.
 export const CART_MANDATE_TTL_MINUTES = 15;
