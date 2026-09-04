@@ -62,7 +62,6 @@ export function Footer() {
             links={[
               { label: "My Account", href: "/account" },
               { label: "Orders", href: "/orders" },
-              { label: "Wishlist", href: "/wishlist" },
               { label: "Cart", href: "/cart" },
             ]}
           />

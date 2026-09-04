@@ -12,7 +12,6 @@ import { Badge } from "@/components/ui/badge";
 import { ProductGallery } from "@/components/product/product-gallery";
 import { PriceTag } from "@/components/product/price-tag";
 import { AddToCartButton } from "@/components/product/add-to-cart-button";
-import { WishlistButton } from "@/components/product/wishlist-button";
 import { RatingStars } from "@/components/common/rating-stars";
 import { ProductCarousel } from "@/components/product/product-carousel";
 import { ErrorState } from "@/components/common/error-state";
@@ -95,18 +94,12 @@ export default async function ProductDetailPage({
 
           <PriceTag price={product.price} mrp={product.mrp} size="lg" />
 
-          <div className="flex items-center gap-3">
-            <AddToCartButton
-              productId={product.id}
-              productName={product.name}
-              disabled={!product.inStock}
-              className="h-10 flex-1 text-base"
-            />
-            <WishlistButton
-              product={product}
-              className="size-10 border"
-            />
-          </div>
+          <AddToCartButton
+            productId={product.id}
+            productName={product.name}
+            disabled={!product.inStock}
+            className="h-10 w-full text-base"
+          />
 
           {!product.inStock && (
             <p className="text-sm font-medium text-destructive">

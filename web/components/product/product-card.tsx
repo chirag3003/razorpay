@@ -3,7 +3,6 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PriceTag } from "@/components/product/price-tag";
 import { AddToCartButton } from "@/components/product/add-to-cart-button";
-import { WishlistButton } from "@/components/product/wishlist-button";
 import type { Product } from "@/lib/types";
 
 export function ProductCard({ product }: { product: Product }) {
@@ -18,10 +17,6 @@ export function ProductCard({ product }: { product: Product }) {
             className="size-full object-cover transition-transform duration-300 group-hover:scale-105"
           />
         </Link>
-        <WishlistButton
-          product={product}
-          className="absolute top-1.5 right-1.5"
-        />
         {product.tags.includes("bestseller") && (
           <Badge className="absolute top-1.5 left-1.5 bg-amber-500 text-white">
             Bestseller

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { UserCircle, PackageCheck, Heart, LogIn, UserPlus, LogOut } from "lucide-react";
+import { UserCircle, PackageCheck, LogIn, UserPlus, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -38,10 +38,6 @@ export function AccountMenu() {
         <DropdownMenuItem render={<Link href="/orders" />}>
           <PackageCheck />
           Orders
-        </DropdownMenuItem>
-        <DropdownMenuItem render={<Link href="/wishlist" />}>
-          <Heart />
-          Wishlist
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {user ? (
