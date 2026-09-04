@@ -144,6 +144,16 @@ export function suggestReserveAmounts(cartTotal: number): number[] {
 // maximum leaves no headroom for clock skew against Razorpay.
 export const RESERVE_PAY_DEFAULT_EXPIRY_DAYS = 30;
 
+// How long a syncMandate result stays fresh enough to reuse. Each sync costs up to two Razorpay
+// round trips (fetchPayment + fetchCustomerToken) and syncMandate is called from createMandate,
+// getMandate, prepare_order, get_payment_status, check_reserve_pay_status, prepareDebit and four
+// webhook branches — one checkout conversation could hit Razorpay six or more times.
+//
+// This weakens nothing. The correctness guarantee is prepareDebit's conditional UPDATE, which
+// re-checks the balance atomically in the database regardless of how fresh the sync was. Callers
+// that genuinely need a live read (polling, webhooks) pass `force`.
+export const RESERVE_PAY_SYNC_FRESHNESS_SECONDS = 15;
+
 // How long an unapproved mandate holds the one-live-per-user slot. Past this age createMandate
 // expires the stale row and proceeds, so closing the UPI app mid-approval isn't a permanent lock.
 export const RESERVE_PAY_PENDING_TTL_MINUTES = 15;

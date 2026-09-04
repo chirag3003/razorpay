@@ -10,6 +10,7 @@ import {
   RESERVE_PAY_MAX_AMOUNT,
   RESERVE_PAY_MAX_EXPIRY_DAYS,
   RESERVE_PAY_PENDING_TTL_MINUTES,
+  RESERVE_PAY_SYNC_FRESHNESS_SECONDS,
 } from "../constants";
 import {
   ConflictError,
@@ -310,7 +311,10 @@ function mapRecurringStatus(status: string | undefined): MandateRow["status"] | 
  * amounts — the per-debit increment is an optimistic write this corrects. Both the polled status
  * endpoint and the webhook handlers call it, so state is mapped in exactly one place.
  */
-export async function syncMandate(mandateId: string) {
+export async function syncMandate(
+  mandateId: string,
+  options: { force?: boolean } = {}
+) {
   const [mandate] = await db
     .select()
     .from(reservePayMandates)
@@ -321,6 +325,15 @@ export async function syncMandate(mandateId: string) {
 
   // Terminal states never change again; each sync costs two Razorpay round trips.
   if (!isLive(mandate)) return mandate;
+
+  // Recently reconciled — reuse it. `force` is for callers whose entire purpose is a live read:
+  // the approval poll, and the webhook branches, where the webhook IS the signal that something
+  // changed. syncedAt is its own column rather than updatedAt precisely so the per-debit
+  // amount_debited increment does not read as a fresh sync.
+  if (!options.force && mandate.syncedAt) {
+    const ageMs = Date.now() - mandate.syncedAt.getTime();
+    if (ageMs < RESERVE_PAY_SYNC_FRESHNESS_SECONDS * 1000) return mandate;
+  }
 
   const updates: Partial<typeof reservePayMandates.$inferInsert> = {};
   let tokenId = mandate.razorpayTokenId;
@@ -381,11 +394,16 @@ export async function syncMandate(mandateId: string) {
     updates.status = "expired";
   }
 
-  if (Object.keys(updates).length === 0) return mandate;
-
+  // syncedAt is stamped even when nothing else changed — "we asked Razorpay and it agreed" is
+  // exactly the fact the freshness window needs. updatedAt is only touched when there is a real
+  // change, so it keeps meaning what it meant.
   const [updated] = await db
     .update(reservePayMandates)
-    .set({ ...updates, updatedAt: new Date() })
+    .set({
+      ...updates,
+      ...(Object.keys(updates).length > 0 ? { updatedAt: new Date() } : {}),
+      syncedAt: new Date(),
+    })
     .where(eq(reservePayMandates.id, mandateId))
     .returning();
 
@@ -479,7 +497,7 @@ export async function prepareDebit(params: {
   if (!reserved) {
     // Lost the race. Re-run the guard chain so the caller gets a named reason, not a bare
     // conflict.
-    assertDebitable(await syncMandate(mandate.id), amountPaise);
+    assertDebitable(await syncMandate(mandate.id, { force: true }), amountPaise);
     throw new ConflictError("Could not reserve funds against the mandate. Please retry.");
   }
 
@@ -767,10 +785,13 @@ export async function revokeMandate(
   return present(updated ?? mandate);
 }
 
-/** Re-reads a mandate from Razorpay and returns it. The endpoint clients poll during approval. */
+/**
+ * Re-reads a mandate from Razorpay and returns it. The endpoint clients poll during approval, so
+ * it forces a live sync — polling that answers from a cache is not polling.
+ */
 export async function getMandate(userId: string, mandateId: string) {
   await requireOwnedMandate(userId, mandateId);
-  return present(await syncMandate(mandateId));
+  return present(await syncMandate(mandateId, { force: true }));
 }
 
 /** Finds the mandate an authorisation order belongs to. Used by the webhook router. */
@@ -928,7 +949,7 @@ export async function syncByApprovalToken(token: string) {
     .where(eq(reservePayMandates.approvalToken, token))
     .limit(1);
 
-  if (mandate) await syncMandate(mandate.id);
+  if (mandate) await syncMandate(mandate.id, { force: true });
 }
 
 /** Finds a mandate by its Razorpay token id — the key the token.* webhook events carry. */
