@@ -11,7 +11,10 @@ import { ProductGrid } from "@/components/product/product-grid";
 import { ProductSort } from "@/components/product/product-sort";
 import { ProductPagination } from "@/components/product/product-pagination";
 import { getCategoryBySlug, getProducts } from "@/lib/api/catalog";
-import { toArray, toNumber, toURLSearchParams } from "@/lib/search-params";
+import {
+  toArray, toNumber, toURLSearchParams,
+  redirectIfPageOutOfRange,
+} from "@/lib/search-params";
 import type { RawSearchParams } from "@/lib/search-params";
 import type { SortOption } from "@/lib/types";
 
@@ -47,7 +50,7 @@ export default async function CategoryPage({
   });
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const currentPage = Math.min(page, totalPages);
+  redirectIfPageOutOfRange(`/categories/${slug}`, raw, page, totalPages);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -94,7 +97,7 @@ export default async function CategoryPage({
         <ProductPagination
           pathname={`/categories/${slug}`}
           searchParams={toURLSearchParams(raw)}
-          page={currentPage}
+          page={page}
           totalPages={totalPages}
         />
       </div>

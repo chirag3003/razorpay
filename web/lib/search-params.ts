@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+
 export type RawSearchParams = { [key: string]: string | string[] | undefined };
 
 export function toArray(value: string | string[] | undefined): string[] {
@@ -24,4 +26,23 @@ export function toURLSearchParams(params: RawSearchParams): URLSearchParams {
     }
   }
   return search;
+}
+
+/**
+ * `?page=999` used to fetch nothing and then render pagination sitting on the
+ * last page with an empty grid between it. Clamp *before* rendering by sending
+ * the reader to a page that exists, keeping every other filter intact.
+ *
+ * Server components only — `redirect` throws to unwind the render.
+ */
+export function redirectIfPageOutOfRange(
+  pathname: string,
+  raw: RawSearchParams,
+  page: number,
+  totalPages: number
+): void {
+  if (page <= totalPages) return;
+  const search = toURLSearchParams(raw);
+  search.set("page", String(totalPages));
+  redirect(`${pathname}?${search.toString()}`);
 }
