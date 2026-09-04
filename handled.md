@@ -152,6 +152,22 @@ into a user-facing failure after the user already got what they asked for.
   (`agent-interfaces/tools/checkout.ts:63`, `remainingAfterCharge`) — returns `0` rather than
   throwing, so a failed follow-up read cannot turn a completed order into a reported failure.
 
+**An order records what was approved, not what the cart says at payment time.**
+`buildCheckoutSnapshot` freezes the line items and their prices into `CheckoutSnapshot.lines`
+alongside the totals, and `confirmPayment` builds `order_items` from that — so mutating the cart
+or moving a catalog price while the Razorpay modal is open cannot produce an order whose items and
+totals disagree. A snapshot written before `lines` existed and still in flight falls back to the
+live cart and logs a WARN, so the old behaviour is visible rather than silent.
+
+On the agent path `place_order` additionally passes the quoted total and the quoted `mandateId`
+down, and `checkoutWithReservePay` / `prepareDebit` **refuse to charge** on either divergence
+rather than recording it and proceeding:
+- a total that no longer matches the signed quote answers `cart_changed` (retryable);
+- a Reserve Pay block that was revoked and recreated since the quote answers `quote_superseded`,
+  with a hint that explicitly warns off `start_reserve_pay_setup` — calling it would revoke the
+  block the customer just approved.
+Both refusals happen before `prepareDebit`, so nothing is reserved and nothing is charged.
+
 **Conversation creation is bounded.** `chatService.resolveConversation` accepts a client-supplied
 `conversationId` with `createIfMissing`, and also mints one when the client sends none — both are
 client-driven, so both check `MAX_CONVERSATIONS_PER_USER` first and answer

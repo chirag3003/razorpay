@@ -427,9 +427,22 @@ export async function prepareDebit(params: {
   amountInRupees: number;
   receipt: string;
   notes?: Record<string, string>;
+  /**
+   * The mandate a signed quote named. When given, the live mandate must still be that one —
+   * otherwise a customer who revoked and recreated their block between the quote and the charge
+   * is debited against a block the quote never mentioned, and nothing would notice, because the
+   * cart-mandate signature does not cover mandateId.
+   */
+  expectedMandateId?: string;
 }) {
   const live = await getLiveMandate(params.userId);
   if (!live) throw new MandateNotActiveError();
+
+  if (params.expectedMandateId && live.id !== params.expectedMandateId) {
+    throw new MandateNotActiveError(
+      "The reserved balance this order was quoted against is no longer the live one."
+    );
+  }
 
   // Sync first so the balance check runs on Razorpay's figures: a debit whose response was lost
   // still spent the customer's money.

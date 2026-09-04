@@ -14,6 +14,7 @@ import * as mandateService from "../../services/mandateService";
 import * as orderService from "../../services/orderService";
 import * as reservePayService from "../../services/reservePayService";
 import type { CartMandateSnapshot } from "../../db/schema";
+import { ConflictError } from "../../errors";
 import {
   createAddressSchema,
   emptySchema,
@@ -510,15 +511,53 @@ const placeOrder = defineTool({
       });
     }
 
-    // The existing, already-verified payment path — no payment logic reimplemented here.
-    const order = await orderService.checkoutWithReservePay(ctx.userId, {
-      addressId: quote.addressId,
-      deliverySlot: quote.deliverySlot,
-    });
+    // Same shape as the fingerprint check: the quote named a specific block, and a customer who
+    // revoked and recreated theirs since is a different authority than the one they approved.
+    // prepareDebit enforces this too — that is the guarantee — but it can only raise
+    // MandateNotActiveError, whose hint sends the model to start_reserve_pay_setup and would
+    // revoke the customer's brand-new block. Check here so the guidance is right.
+    const liveMandate = await reservePayService.getLiveMandate(ctx.userId);
+    if (liveMandate && liveMandate.id !== quote.mandateId) {
+      await mandateService.markStatus(quote.id, "superseded");
+      toolError(
+        "quote_superseded",
+        "The customer's reserved balance was replaced after this quote was created.",
+        {
+          retryable: true,
+          hint: "Their new balance is fine — just call prepare_order again and re-confirm the fresh quote. Do NOT call start_reserve_pay_setup; that would revoke the block they just approved.",
+        }
+      );
+    }
 
-    // checkoutWithReservePay re-derives its snapshot from the live cart at charge time, so the
-    // charged total can in principle differ from the quoted one. The fingerprint check narrows
-    // that window but does not close it — record any divergence rather than lose it.
+    // The existing, already-verified payment path — no payment logic reimplemented here.
+    //
+    // The third argument is what the customer actually approved. checkoutWithReservePay re-derives
+    // its snapshot from the live cart at charge time, so without it the charged total and the
+    // charged mandate are both whatever is true at that instant rather than whatever the signed
+    // quote named. It now refuses on either divergence instead of charging and recording the fact.
+    let order;
+    try {
+      order = await orderService.checkoutWithReservePay(
+        ctx.userId,
+        { addressId: quote.addressId, deliverySlot: quote.deliverySlot },
+        { total: quote.snapshot.total, mandateId: quote.mandateId }
+      );
+    } catch (err) {
+      // A total divergence is the same situation as a failed fingerprint check above, so give the
+      // model the same recoverable code rather than the generic `conflict` a ConflictError maps
+      // to. Nothing was charged — the refusal happens before prepareDebit.
+      if (err instanceof ConflictError) {
+        await mandateService.markStatus(quote.id, "superseded");
+        toolError("cart_changed", err.message, {
+          retryable: true,
+          hint: "Call prepare_order again, show the customer the updated total, and re-confirm.",
+        });
+      }
+      throw err;
+    }
+
+    // Kept in the audit row, but it can no longer be false on this path — the charge is refused
+    // above rather than reaching here with a different total.
     const totalMatchesQuote = order.total === quote.snapshot.total;
 
     try {
