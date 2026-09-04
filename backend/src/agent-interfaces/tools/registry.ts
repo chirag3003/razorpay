@@ -50,6 +50,22 @@ function mapError(err: unknown): ToolError {
       case "NOT_FOUND":
         return { code: "not_found", message: err.message, retryable: false };
 
+      case "VALIDATION":
+        return {
+          code: "invalid_input",
+          message: err.message,
+          retryable: true,
+          hint: "Adjust the arguments to satisfy the limit and call the tool again.",
+        };
+
+      case "PRODUCT_UNAVAILABLE":
+        return {
+          code: "product_unavailable",
+          message: err.message,
+          retryable: false,
+          hint: "Offer an alternative — list_related_products will suggest items in the same category.",
+        };
+
       case "EMPTY_CART":
         return {
           code: "cart_empty",

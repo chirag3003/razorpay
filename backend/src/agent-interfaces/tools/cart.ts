@@ -56,9 +56,10 @@ const addToCart = defineTool({
   input: addToCartSchema,
   readOnly: false,
   handler: async (ctx, input) => {
-    // Also confirms the product is real and sellable: cartService.addItem only checks it isn't
-    // archived — the REST route's Zod schema did the inStock and quantity checks, and agents
-    // don't pass through it.
+    // cartService.addItem enforces both the stock check and the per-line cap for every caller.
+    // These two checks are deliberately duplicated here, ahead of it, purely for the wording: a
+    // ToolFailure carries a model-facing `hint` naming the product and the headroom left, which a
+    // mapped DomainError cannot. The service is the guarantee; this is the better error message.
     const product = input.productId
       ? await productService.getProductById(input.productId)
       : await productService.getProductBySlug(input.slug!);

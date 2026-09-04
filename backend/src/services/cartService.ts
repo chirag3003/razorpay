@@ -1,8 +1,8 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { cartItems, carts, products } from "../db/schema";
-import { EmptyCartError, NotFoundError } from "../errors";
-import { getDeliveryFee } from "../constants";
+import { EmptyCartError, NotFoundError, ValidationError } from "../errors";
+import { getDeliveryFee, MAX_CART_ITEM_QTY } from "../constants";
 
 // Cart is server-side, referenced by id (backend/CLAUDE.md "Cart Handling") — every function
 // here takes a cart_id, never client- or agent-submitted contents. One active cart per user;
@@ -35,7 +35,7 @@ async function assertItemBelongsToCart(cartId: string, itemId: string) {
 
 export async function addItem(cartId: string, productId: string, qty: number) {
   const [product] = await db
-    .select({ id: products.id })
+    .select({ id: products.id, name: products.name })
     .from(products)
     .where(and(eq(products.id, productId), isNull(products.archivedAt)))
     .limit(1);
@@ -48,10 +48,21 @@ export async function addItem(cartId: string, productId: string, qty: number) {
     .where(and(eq(cartItems.cartId, cartId), eq(cartItems.productId, productId)))
     .limit(1);
 
+  // Against the resulting line, not the increment: qty is additive, so a schema bound on the
+  // request alone lets repeated capped calls run a line past the cap and eventually past int4.
+  // Here rather than only in the route schema or only in the agent tool, so every caller of the
+  // service inherits it.
+  const resultingQty = (existing?.qty ?? 0) + qty;
+  if (resultingQty > MAX_CART_ITEM_QTY) {
+    throw new ValidationError(
+      `That would put ${product.name} at ${resultingQty}, over the limit of ${MAX_CART_ITEM_QTY} per item.`
+    );
+  }
+
   if (existing) {
     await db
       .update(cartItems)
-      .set({ qty: existing.qty + qty })
+      .set({ qty: resultingQty })
       .where(eq(cartItems.id, existing.id));
   } else {
     await db.insert(cartItems).values({ cartId, productId, qty });

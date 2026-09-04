@@ -26,6 +26,23 @@ export class ForbiddenError extends DomainError {
   }
 }
 
+// A request that is well-formed enough to parse but breaks a rule the schema cannot express —
+// a cart line pushed over MAX_CART_ITEM_QTY by an *additive* add, for instance, where no single
+// request is invalid on its own. registry.mapError turns this into `invalid_input`.
+export class ValidationError extends DomainError {
+  constructor(message: string) {
+    super(message, 400, "VALIDATION");
+  }
+}
+
+// The product exists and is sellable in principle, but not right now. Distinct from NotFoundError
+// so the caller can offer an alternative rather than claim the product doesn't exist.
+export class ProductUnavailableError extends DomainError {
+  constructor(message: string) {
+    super(message, 409, "PRODUCT_UNAVAILABLE");
+  }
+}
+
 export class EmptyCartError extends DomainError {
   constructor() {
     super("Cart is empty", 400, "EMPTY_CART");
