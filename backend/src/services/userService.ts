@@ -38,6 +38,16 @@ export async function createUser(input: SignupInput) {
   return user;
 }
 
+/**
+ * A real argon2 hash to verify against when the email is unknown, so a miss costs the same as a
+ * hit. Without it an unknown address answers in ~0ms while a known one pays for a full verify —
+ * the response text is identical (handled.md section 7) but the timing enumerates accounts anyway.
+ *
+ * Computed once at module load, not per request: the point is to spend the same time as a real
+ * verify, and hashing on every miss would spend considerably more.
+ */
+const DUMMY_PASSWORD_HASH = await Bun.password.hash("password-that-is-never-valid");
+
 export async function verifyCredentials(email: string, password: string) {
   const [user] = await db
     .select()
@@ -45,10 +55,11 @@ export async function verifyCredentials(email: string, password: string) {
     .where(eq(users.email, email))
     .limit(1);
 
-  if (!user) throw new UnauthorizedError("Invalid email or password");
+  // Verify unconditionally — against the real hash if the account exists, against the dummy if it
+  // does not — then decide. Both paths throw the same error, as they already did.
+  const valid = await Bun.password.verify(password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
 
-  const valid = await Bun.password.verify(password, user.passwordHash);
-  if (!valid) throw new UnauthorizedError("Invalid email or password");
+  if (!user || !valid) throw new UnauthorizedError("Invalid email or password");
 
   return user;
 }

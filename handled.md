@@ -159,7 +159,14 @@ Failures are shaped so a caller learns nothing from them.
 - Another user's order, address or conversation answers **404, not 403** — uniformly, across REST
   routes and agent tools alike. `resolveConversation` documents this explicitly.
 - `verifyCredentials` returns one `"Invalid email or password"` for both an unknown email and a
-  wrong password.
+  wrong password, and takes the **same time** either way: the miss path runs `Bun.password.verify`
+  against a dummy argon2 hash computed once at module load, so a returning-early miss no longer
+  answers in ~0ms while a hit pays for a full verify. Identical text with distinguishable timing
+  is still enumeration.
+  *Not yet closed on the signup side:* `createUser` still throws
+  `"An account with this email already exists"`, which leaks the same fact directly. It is left
+  alone deliberately — a non-enumerating signup and a non-enumerating forgot-password want the
+  same treatment, and the password-reset work is `issues.md` P2.
 - `GET /api/reserve-pay/approval/:token` returns one 404 for unknown, expired and abandoned links
   alike, so someone holding a guess cannot tell which.
 
