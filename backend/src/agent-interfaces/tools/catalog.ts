@@ -49,8 +49,14 @@ const searchProducts = defineTool({
 
 // For MCP callers with no LLM of their own. search_products stays LLM-free — this is a separate
 // tool one layer above it, and per LLM Isolation only this handler may reach searchAssistService.
+//
+// MCP-only (`surfaces` below): the chat agent is itself an LLM, so offering it this tool spends a
+// SECOND LLM call producing filters it could have produced for free by calling search_products
+// directly — an extra round trip, a second failure mode, and two models able to disagree about
+// one query.
 const searchProductsNl = defineTool({
   name: "search_products_nl",
+  surfaces: ["mcp"],
   description:
     "Search the catalog from a free-text description of what the customer wants (an LLM turns " +
     "it into structured filters first). Prefer search_products if you already know exact " +

@@ -5,6 +5,7 @@ import { db } from "../db";
 import { chatMessages, conversations } from "../db/schema";
 import { ConflictError, NotFoundError } from "../errors";
 import { runTool, toOpenAITools } from "../agent-interfaces/tools/registry";
+import { isOnSurface } from "../agent-interfaces/tools/types";
 import type { ToolContext, ToolResult } from "../agent-interfaces/tools/types";
 import { runAgentTurn } from "../llm/agentLoop";
 import { buildSystemPrompt } from "../llm/systemPrompt";
@@ -327,7 +328,12 @@ export async function* runChatTurn(input: {
   }
 
   // place_order is never in this list — see handlePlaceOrderConfirm.
-  const tools = toOpenAITools((tool) => tool.name !== "place_order");
+  // Two independent filters. place_order is a SAFETY gate — it is never in the model's hands, so
+  // no prompt injection can reach it. isOnSurface is a relevance one: search_products_nl is
+  // MCP-only, since this agent is already an LLM and can build the filters itself.
+  const tools = toOpenAITools(
+    (tool) => tool.name !== "place_order" && isOnSurface(tool, "chat")
+  );
 
   const [history, context] = await Promise.all([
     loadHistory(conversation.id),

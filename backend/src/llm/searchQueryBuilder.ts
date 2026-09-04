@@ -16,11 +16,21 @@ function isEventStream(value: unknown): value is AsyncIterable<unknown> {
   return typeof value === "object" && value !== null && Symbol.asyncIterator in value;
 }
 
-function systemPrompt(categorySlugs: string[]) {
+/** What the model needs to pick a category: the slug it must emit, plus what that slug means. */
+export type CategoryHint = { slug: string; name: string; description: string };
+
+function systemPrompt(categories: CategoryHint[]) {
+  // One line per category, `slug — name — description`. Slugs alone left the model inferring that
+  // "milk" belongs to `dairy-eggs` from the slug string itself.
+  const catalog = categories
+    .map((c) => `  ${c.slug} — ${c.name} — ${c.description}`)
+    .join("\n");
+
   return (
     "You turn a shopper's free-text request into structured catalog filters for a grocery " +
-    "store. Only use category slugs from this exact list — never invent one: " +
-    `${categorySlugs.join(", ")}. ` +
+    "store. Only use category slugs from this exact list — never invent one, and emit the slug, " +
+    "not the name:\n" +
+    `${catalog}\n` +
     "If nothing in the request clearly maps to a filter, omit that field rather than guessing. " +
     "Respond with only the JSON object, no other text."
   );
@@ -28,7 +38,7 @@ function systemPrompt(categorySlugs: string[]) {
 
 export async function buildSearchFilters(
   freeText: string,
-  categorySlugs: string[]
+  categories: CategoryHint[]
 ): Promise<Partial<SearchFilters>> {
   try {
     const response = await openrouter.chat.send({
@@ -36,7 +46,7 @@ export async function buildSearchFilters(
         model: modelChain[0],
         models: modelChain.length > 1 ? modelChain : undefined,
         messages: [
-          { role: "system", content: systemPrompt(categorySlugs) },
+          { role: "system", content: systemPrompt(categories) },
           { role: "user", content: freeText },
         ],
         temperature: 0,

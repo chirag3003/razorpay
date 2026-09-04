@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ALL_TOOLS, runTool } from "../tools/registry";
+import { isOnSurface } from "../tools/types";
 import type { ToolContext, ToolResult } from "../tools/types";
 
 // Adapter over the same tool registry the chat agent uses. No logic of its own (Hard Rule #2) —
@@ -51,7 +52,7 @@ export function buildMcpServer(ctx: ToolContext): McpServer {
     { instructions: AGENT_INSTRUCTIONS }
   );
 
-  for (const tool of ALL_TOOLS) {
+  for (const tool of ALL_TOOLS.filter((tool) => isOnSurface(tool, "mcp"))) {
     server.registerTool(
       tool.name,
       {
