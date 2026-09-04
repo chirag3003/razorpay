@@ -51,6 +51,14 @@ either dead weight (as `OrderReviewPart.payment.tokenId` turned out to be, and w
 scaffolding for a "manage this specific reserved balance" affordance that was never built. Left in
 place; it should get a consumer or go.
 
+**Voice chat is multilingual; the rest of the UI is not.** The mic transcribes 23 languages and
+speaks the reply back in whichever was detected (`hooks/use-voice-recorder.ts`,
+`store/chat-store.ts`, backend `POST /api/voice/*`). But the agent, every widget's copy and the
+catalog are English, so a Hindi speaker hears fluent Hindi and then reads an English product card
+underneath it. Closing that gap means translating widget payloads and product names, or running
+the agent in the target language — a separate piece of work touching `backend/src/chat/partMapper.ts`
+and `systemPrompt.ts`. Known and accepted; not a bug.
+
 **Auth tokens live in `localStorage`.** `store/auth-store.ts` persists `user` and `token`; the
 admin store does the same. Readable by any injected script or extension, with a 7-day TTL and no
 server-side revocation. Accepted for this project; it is also the reason every authed page is a

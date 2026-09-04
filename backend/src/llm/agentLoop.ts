@@ -3,6 +3,7 @@ import { openrouter, modelChain } from "../clients/openrouter";
 import { runTool } from "../agent-interfaces/tools/registry";
 import type { ToolContext, ToolResult } from "../agent-interfaces/tools/types";
 import { logger } from "../logger";
+import { LLM_ROUND_TIMEOUT_MS } from "../constants";
 
 /**
  * The model/tool loop, no framework. Owns three things: talking to OpenRouter, reassembling a
@@ -80,7 +81,16 @@ async function* streamOnce(
         stream: true,
       },
     },
-    { fetchOptions: signal ? { signal } : undefined }
+    // Always time-bounded, and aborted early if the caller (a closed chat panel) goes away. A
+    // provider that accepts a request and never answers would otherwise hang the turn forever
+    // with no error and no log — see LLM_ROUND_TIMEOUT_MS.
+    {
+      fetchOptions: {
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(LLM_ROUND_TIMEOUT_MS)])
+          : AbortSignal.timeout(LLM_ROUND_TIMEOUT_MS),
+      },
+    }
   );
 
   if (!isEventStream(response)) {

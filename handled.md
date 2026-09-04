@@ -242,6 +242,16 @@ Failures are shaped so a caller learns nothing from them.
   order matching the Razorpay order id, then routes to the success page; after ~30s it falls back
   to "your payment went through, we'll email you" with a link to `/orders`. Only
   `PAYMENT_VERIFICATION_FAILED` — a genuinely bad signature — keeps the plain error path.
+- **Voice degrades to text at every step, never to a broken control.** `store/chat-store.ts` +
+  `routes/voice.ts`: a server with no `SARVAM_API_KEY` answers `503 VOICE_UNAVAILABLE`, which the
+  storefront treats as "hide the mic" rather than an error — text chat is untouched. A failed
+  transcription toasts once and leaves the draft empty; a failed synthesis is silent, because the
+  reply is already on screen and a toast per turn would be noise. Sarvam's own error bodies are
+  logged and never returned: they can quote the customer's speech back.
+- **A language that can be heard but not spoken falls back rather than failing.**
+  `services/voiceService.ts` — saaras transcribes 23 languages, bulbul synthesises fewer, so a
+  reply for a language with no voice is spoken in English and the response reports the language
+  actually used. Over-long replies are truncated at a sentence boundary instead of rejected.
 - **Cart writes survive out-of-order responses.** `store/cart-store.ts` stamps every mutation with
   a monotonic sequence number and applies a response only while it is still the newest, so five
   fast taps on `+` settle on the value that was issued last, not the one that responded last. A

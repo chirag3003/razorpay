@@ -94,6 +94,13 @@ export const MAX_ORDER_PAGE_SIZE = 100;
 // are already handled in the same file.
 export const MAX_CONTEXT_ADDRESSES = 5;
 
+// Ceiling on one LLM round. Without it a request that the provider accepts but never answers
+// wedges the turn forever: the SSE stream stays open, the client sees message_start and nothing
+// else, and nothing is logged because the round log only runs after the stream completes. A
+// malformed message array (an orphaned `tool` message) does exactly that — observed hanging past
+// two minutes. Generous against real rounds, which measure 2-4s.
+export const LLM_ROUND_TIMEOUT_MS = 60_000;
+
 // The signed order quote from prepare_order. Short-lived: it freezes a price, and the longer it
 // lives the more likely the cart behind it has moved.
 export const CART_MANDATE_TTL_MINUTES = 15;
