@@ -14,7 +14,7 @@
 // 1 -> 2: OrderReviewPart.payment dropped `tokenId`, which no widget rendered. web/ still
 // declares it required, so this mismatch is deliberate — a real client fails loudly with 400
 // PROTOCOL_VERSION_MISMATCH rather than receiving a field that is undefined at runtime. Bump
-// web/ to 2 per web/issues.md.
+// web/ to 2.
 //
 // 2 -> 3: CartSummaryPart gained `lines`. Without them the widget could only ever show totals,
 // while systemPrompt.ts told the model to stay quiet and "let its widget show the detail" — so a
@@ -222,7 +222,7 @@ export type OrderReviewPart = PartBase & {
     discount: Rupees;
     total: Rupees;
   };
-  // No tokenId — see the CHAT_PROTOCOL_VERSION comment above and web/issues.md.
+  // No tokenId — see the CHAT_PROTOCOL_VERSION comment above. Nothing on the client reads it.
   payment: { method: "reserve_pay"; remaining: Rupees };
   editable: ("cart" | "address" | "slot")[];
 };

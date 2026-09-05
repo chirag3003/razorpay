@@ -23,7 +23,7 @@ function secretsMatch(candidate: string, expected: string) {
 
 export async function login(password: string) {
   // One shared, unrotatable password guards the whole operator surface. There is no lockout and
-  // no rate limit yet (issues.md P0#7), so volume remains the attacker's easiest lever — but a
+  // no rate limit anywhere yet, so volume remains the attacker's easiest lever — but a
   // timing side channel costs nothing to remove.
   if (!secretsMatch(password, env.ADMIN_PASSWORD)) {
     throw new UnauthorizedError("Invalid admin password");

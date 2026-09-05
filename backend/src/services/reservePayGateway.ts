@@ -8,7 +8,7 @@ import * as sim from "./reservePaySimService";
 //
 // In real mode every function here is a straight pass-through, so paymentService remains the only
 // place raw gateway calls live. The simulator exists because Razorpay has not provisioned the S2S
-// payment API on this account — see backend/issues.md.
+// payment API on this account — see the README's Razorpay section.
 
 /**
  * Deliberately narrower than what paymentService returns: only the fields reservePayService

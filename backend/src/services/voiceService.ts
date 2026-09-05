@@ -17,7 +17,7 @@ import { logger } from "../logger";
  * catalog are English, so the pipeline normalises *into* English on the way in and back *out of*
  * it on the way down. A Hindi speaker is understood and answered aloud in Hindi; the product
  * cards under that answer are still English. Closing that last gap means translating widget
- * payloads and product names, which is a much larger piece of work — see web/issues.md.
+ * payloads and product names, which is a much larger piece of work. Known and accepted.
  */
 
 export type Transcription = {

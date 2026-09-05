@@ -41,7 +41,7 @@ export async function createUser(input: SignupInput) {
 /**
  * A real argon2 hash to verify against when the email is unknown, so a miss costs the same as a
  * hit. Without it an unknown address answers in ~0ms while a known one pays for a full verify —
- * the response text is identical (handled.md section 7) but the timing enumerates accounts anyway.
+ * the response text is identical either way, but the timing enumerates accounts anyway.
  *
  * Computed once at module load, not per request: the point is to spend the same time as a real
  * verify, and hashing on every miss would spend considerably more.

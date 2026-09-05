@@ -437,7 +437,7 @@ const prepareOrder = defineTool({
       lines: cart.items.map(toAgentCartLine),
       address: toAgentAddress(address),
       slot: { id: input.slotId, label: slotLabel },
-      // No tokenId: no widget renders it. See web/issues.md for the frontend follow-up.
+      // No tokenId: no widget renders it.
       payment: {
         method: "reserve_pay" as const,
         remaining: presented.remaining,

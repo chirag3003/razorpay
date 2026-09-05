@@ -65,7 +65,7 @@ export async function listProducts(filters: ProductQuery) {
 
   // Every sort ends with products.id. Without a tiebreaker, rows with equal keys come back in
   // planner order, which is not stable across pages — so paginated results could repeat or skip
-  // products entirely. That is the backend half of web/issues.md's pagination bug.
+  // products entirely — pagination repeats or skips rows without it.
   const orderBy =
     filters.sort === "price-asc"
       ? [asc(products.price), asc(products.id)]

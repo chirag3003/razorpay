@@ -115,7 +115,7 @@ oauthRoutes.get(
   }
 );
 
-// Read-only lookup for web/'s consent page — see web/issues.md.
+// Read-only lookup for web/'s consent page (/agent-connect).
 oauthRoutes.get("/api/oauth/authorize/:requestId", async (c) => {
   try {
     const info = await oauthService.getAuthorizationRequest(c.req.param("requestId"));

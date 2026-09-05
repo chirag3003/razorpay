@@ -18,7 +18,7 @@ import {
 /**
  * The human side of MCP OAuth (backend/API.md §6.15): `GET /oauth/authorize` on the backend
  * 302-redirects here with `?request_id=...`. This page is the only piece of that flow the backend
- * can't render itself, since it's a pure JSON API. See web/issues.md for the original spec.
+ * can't render itself, since it's a pure JSON API.
  *
  * Deliberately not wrapped in the `(shop)` group (no header/footer/chat launcher — this is a
  * standalone consent screen, closest in spirit to `app/admin/login`) and not gated by the shared
