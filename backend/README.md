@@ -1,21 +1,26 @@
 # backend
 
-To install dependencies:
+Bun + Hono. Services, REST routes, MCP server, Razorpay webhooks. Port 4000.
+
+**First-time setup, env keys, and the Razorpay production-vs-simulator switch: [root
+`README.md`](../README.md).**
 
 ```bash
 bun install
+bun run dev        # http://localhost:4000
 ```
 
-To run:
-
-```bash
-bun run dev
+```
+bun run dev          hot reload
+bun run build        bundle to ./dist
+bun run start        run the built bundle
+bun run db:generate  generate a migration from the schema
+bun run db:migrate   apply pending migrations
+bun run db:push      push schema, no migration file (local only)
+bun run db:studio    Drizzle Studio
+bun run db:seed      seed categories/products, safe to re-run
 ```
 
-See `CLAUDE.md` for the full script list (migrations, seeding, build/start) and first-time setup.
-
-See `API.md` for the full REST API reference (every route, request/response shapes, error
-format, and the Razorpay checkout integration sequence) — written for integrating a frontend
-against this backend without reading its source.
-
-This project was created using `bun init` in bun v1.3.14. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+- **`API.md`** — every route, request/response shape and error code. Read this to integrate
+  against the backend instead of reading source.
+- **`CLAUDE.md`** — conventions for changing backend code.
